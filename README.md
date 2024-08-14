@@ -2,12 +2,10 @@ This repository contains data and code from Ostridge et al.
 
 This code starts with the mapped on target BAM files for the exome and chr21 (Fontsere et al., 2022) from PanAf project 
 (http://panafrican.eva.mpg.de/). The scripts here then perform sample filtering, population structure analyses, population allele 
-frequency estimation and tests for signatures of local adaptation. This directory contains scripts that were run on an HPC (I used 
-UCL's myriad) and others that can be run locally.
+frequency estimation and tests for signatures of local adaptation. This directory contains scripts that were run on an HPC and 
+others that can be run locally.
 
 Each of the subdirectories listed below have their own README file going into greater detail.
-
-General point: some scripts have the suffix '_2024', this is usually because the myriad directory structure changed after the myriad data loss incident
 
 genomic_data
 - This directory contains genomic data.
