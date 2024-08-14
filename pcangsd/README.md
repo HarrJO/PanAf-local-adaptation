@@ -14,6 +14,3 @@ filter stage = f1 etc.. The final filter stage for the exome is f5.
 - These scripts run PCAngsd for the chr21data.
 The file name convention is the same as for the exomes, however, the final filtered stage for chr21 data is f7 (this is all explained 
 in ../sample_filtering/chr21/scripts)
-
-./$DATA/output
-- Contains PCAngsd outputs

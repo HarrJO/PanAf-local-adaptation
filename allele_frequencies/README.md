@@ -54,31 +54,6 @@ selecting everything third SNP and so on. This method means the subsets are spre
 ./scripts/allele_frequency_tools.R
 	- Defines custom functions used in Rmarkdown scripts 
 
-./scripts/plot.exome.and.chr21.SFS.Rmd
-	- Rmarkdown script which plots the site frequency spectra (SFS) for the exome and chr21 data
-	- Also repeats the DAF differences analysis of Schmidt et al. (2019) between subspecies and populations
-
-./scripts/exome_capture_vs_chr21_capture_stats.Rmd
-- This script compares the coverage and allele frequency estimates for SNPs in both the exome and chr21 capture data (exonic chr21) to 
-check for any differences due to the different hybridisation techniques which would make non-genic-chr21 unsuitable for generating a 
-null distribution (when using BayPass).
-- Coverage is calculated in ../coverage.
-
-./scripts/plot.exome.and.chr21.Fst.Rmd
-- Work in progress document for calculating Fst between populations
-
-./scripts/exome.and.chr21.genome.distribution.Rmd
-- Looks at the spacing between SNPs in the exome and non-genic-chr21 to get an idea of the differences in LD
-
-./output/
-- Contains the outputs from scripts in ./scripts/.
-
-./$DATA/output
-	- The output for scripts.
-	- Each directory corresponds to a subspecies-dataset with either no missing data or up to 30% of populations allowed to have 
-missing data. Note that Nigeria-Cameroon only has two populations and so no missing data and missing data in up to 30% of populations 
-is the same thing.
-
 ./exome/scripts/
 	- Contains subdirectories with job scripts used to run ./scripts/maf2dac.v3.2.py on the exome data.
 

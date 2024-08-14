@@ -22,12 +22,6 @@
 ./gowinda/baypass_core/scripts/plot_gowinda.R
 - R script defining custom functions for plotting gowinda outputs.
 
-./gowinda/baypass_core/output/gowinda_input
-- This directory stores the files outputted from ./gowinda/baypass_core/scripts/run_gowinda.Rmd required for input for gowinda.
-
-./gowinda/baypass_core/output/gowinda_output
-- This directory stores the output of gowinda.
-
 
 ./gowinda/baypass_aux
 - Contains the scripts required to run gowinda and analyses the output - this directory used input files generates in 
@@ -42,8 +36,3 @@ be run to generate candidate SNP files.
 ./gowinda/baypass_aux/scripts/gowinda_outputs.aux.f_over_sum_known_trees.paper_figures.Rmd
 - Plots the gowinda output for the AUX candidates.
 
-./gowinda/baypass_aux/output/gowinda_input
-- This directory stores the files required for input for gowinda (only candidate SNP files generated in ).
-
-./gowinda/baypass_aux/output/gowinda_output
-This directory stores the output of gowinda for the AUX candidates.

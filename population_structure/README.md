@@ -8,5 +8,3 @@ chr21) samples.
 	- The exome and chr21 results agree very closely.
 	- "Populations" are defined by combining closely related sample sites in the exome script. 
 
-./exome/output
-Outputs from the exome Rmarkdown scripts defining "populations".

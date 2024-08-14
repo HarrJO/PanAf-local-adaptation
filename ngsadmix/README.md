@@ -12,6 +12,3 @@ PCAngsd apart.
 - Directory names:
 	• As is made clear in ../sample_filtering/exome/scripts, I label each sample filtering stage as fx, i.e., unfiltered = f0, one 
 filter stage = f1 etc.. The final filter stage for the exome is f5.
-
-./exome/output
-- Contains NGSadmix outputs

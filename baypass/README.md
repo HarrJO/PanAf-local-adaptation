@@ -23,23 +23,11 @@ no missing data.
 equivalent script doesn't exist for the core model. Core model runs were done by manually editing the shell scripts and submitting 
 them to the cluster.
 
-./baypass/running_baypass/exome/output
-- Contains all BayPass output separated into directories corresponding to particular subspecies-datasets and amount of missing data 
-allowed (none or 30%).
-	• Subdirectories separate into results under the core or AUX (auxi) model.
-		○ Subdirectories in auxi correspond to the particular environmental covariable(s) used.
-- Alongside output files are files which report the script and console output from running BayPass.
-
 ./baypass/running_baypass/chr21
 - This directory mirrors ./baypass/running_baypass/exome only applied to non-genic-chr21 rather than the exome.
 
 ./baypass/running_baypass/bin/baypass_2.2
 - Contains the binary files for BayPass.
-
-./baypass/running_baypass/baypass_env_input
-- Contains the environmental covariate files required for the AUX model (generated in 
-../environmental_data/scripts/2.format_env_file.Rmd).
-
 
 
 ./baypass/analysing_baypass_output
@@ -73,17 +61,6 @@ analysis.
 to account for this potentially confounding effect.
 - Outputs to ./baypass/analysing_baypass_output/baypass_core/outputs/baypass_core_output_with_fprs.
 
-./baypass/analysing_baypass_output/baypass_core/scripts/baypass_core_candidate_genome_distribution.Rmd
-- This script plots the distribution of candidate SNPs across the genome.
-
-./baypass/analysing_baypass_output/baypass_core/scripts/baypass_core_candidate_allele_frequency_patterns.Rmd
-- This script investigates allele frequency patterns at candidate SNPs, mainly looking for evidence of clusters of populations/SNPs 
-with similar patterns.
-
-./baypass/analysing_baypass_output/baypass_core/scripts/baypass_core.top_n_genes.Rmd
-- This script focuses on the putative functions of the genes with the very strongest evidence of selection.
-- Outputs to ./baypass/analysing_baypass_output/baypass_core/outputs/top_snps.
-
 ./baypass/analysing_baypass_output/baypass_core/scripts/*.R
 - This script define many custom functions used in these Rmarkdowns.
 
@@ -106,10 +83,6 @@ abandoned in favour of the current method.
 ./baypass/analysing_baypass_output/baypass_aux/scripts/baypass_aux_tools.R
 - This contains custom R functions used in Rmarkdown scripts.
 
-
-./baypass/analysing_baypass_output/baypass_aux/scripts/f_over_sum_known_trees/f_over_sum_known_trees.baypass_aux_distributions.Rmd
-- This scrip plots the distributions of BayPass AUX output statistics.
-
 ./baypass/analysing_baypass_output/baypass_aux/scripts/f_over_sum_known_trees/f_over_sum_known_trees.baypass_aux_candidate.Rmd
 - This script selects candidates using the formatted BayPass output from the exome and chr21 generated in 
 ./baypass/analysing_baypass_output/baypass_aux/scripts/format_baypass_aux_output.ipynb.
@@ -117,48 +90,9 @@ abandoned in favour of the current method.
 within coverage bins to account for this potentially confounding effect.
 - Outputs to ./baypass/analysing_baypass_output/baypass_aux/output/baypass_aux_output_with_fprs.
 
-./baypass/analysing_baypass_output/baypass_aux/scripts/f_over_sum_known_trees/f_over_sum_known_trees.baypass_aux_distribution_of_candidates_in_the_genome.Rmd
-- This script plots the distribution of candidate SNPs across the genome.
-
-./baypass/analysing_baypass_output/baypass_aux/scripts/f_over_sum_known_trees/f_over_sum_known_trees.baypass_aux.candidate_allele_frequencies.Rmd
-- This script investigates allele frequency patterns at candidate SNPs, mainly looking for evidence of clusters of populations/SNPs 
-with similar patterns.
-
-./baypass/analysing_baypass_output/baypass_aux/scripts/f_over_sum_known_trees/f_over_sum_known_trees.baypass_aux.top_n_genes.Rmd
-- This script focuses on the putative functions of the genes with the very strongest evidence of selection.
-
-./baypass/analysing_baypass_output/baypass_aux/scripts/f_over_sum_known_trees/f_over_sum_known_trees.baypass_aux_ce_rm_e.IssaValley.Rmd
-- This script analyses the outputs for the test run with the Issa Valley population removed to determine the effect this population 
-has on the candidates.
-
 
 ./baypass/analysing_baypass_output/scripts
 - Contains Rmarkdowns which produce various plots related to the core and AUX models
 
-./baypass/analysing_baypass_output/scripts/baypass_output_summary.Rmd
-- This script plots various figure giving an overview of the BayPass analysis.
-- Many of these plots are similar to those in there scripts only formatted for publication
-
 ./baypass/analysing_baypass_output/scripts/baypass_tools.R
 - This contains custom R functions used in Rmarkdown scripts for both the core and AUX models.
-
-./baypass/analysing_baypass_output/scripts/baypass_output_exome_vs_chr21.Rmd
-- This script compared the BayPass core and AUX results between the exome and non-genic-chr21
-- This is similar in spirit to the methodology used to define FDR thresholds but looks across multiple bins in an attempt to do something similar to the DAF difference work in Schmidt et al. (2019) and ../allele_frequencies/scripts/plot.exome.and.chr21.SFS.Rmd
-
-./baypass/analysing_baypass_output/scripts/number_of_SNPs_and_genes.Rmd
-- This script looks at the number of SNPs and genes covered by the PanAf exomes and high coverage genomes 
-
-./baypass/analysing_baypass_output/scripts/baypass_output_core_vs_aux.Rmd
-- This script compares the values per SNP from the core and aux analysis 
-
-./baypass/analysing_baypass_output/malaria_candidates/scripts
-- This contains scripts for analysing key malaria related candidate genes identified under the AUX model (HBB/HBD and GYPA/GYPB).
-
-./baypass/analysing_baypass_output/malaria_candidates/scripts/baypass_output_HBB-HBD_GYPA-GYPB.Rmd
-- This Rmarkdown looks at the evidence of selection at these loci (HBB/HBD and GYPA/GYPB) in the BayPass core and AUX model tests 
-
-./baypass/analysing_baypass_output/malaria_candidates/scripts/structure_and_function_HBB-HBD_GYPA-GYPB.Rmd 
-- This Rmarkdown investigates the function of these loci (HBB/HBD and GYPA/GYPB) and investigates evidence of structural variation 
-using high coverage genomes aligned to hg19  (de Manuel et al. 2016; Prado-Martinez et al. 2013) 
-
