@@ -1,0 +1,415 @@
+---
+title: "Exome Sample Filtering: Remove Related Samples (f2)"
+author: "Harrison Ostridge"
+date: "08/03/2021"
+output: html_document
+---
+
+f1_exome.sample.filtering.Rmd - Remove Contaminated and Low Coverage Samples.
+  - PC1 threshold.
+  - <1% human contamination.
+  - >0.5x coverage.
+
+**f2_exome.sample.filtering.Rmd - Remove Related Samples.**
+  - Remove first order relatives as estimated using ngsRelate.
+
+f3_exome.sample.filtering.Rmd - Remove Samples Which Do Not Cluster Correctly in Demographic Analyses.
+  - Analyse PCAngsd and NGSadmix results.
+  - Identify poor quality samples and sample swaps.
+
+f4_exome.sample.filtering.Rmd - Reassign Swapped Samples
+  - Identify samples which have been misslabeled and reassign them to their correct communities
+
+f5_exome.sample.filtering.Rmd - Remove Related Swapped Samples
+  - After reassigning swapped samples, we need to check they are not related to samples in their new (correct) communities.
+  - This is needed because the first stage of removing relatives was ran within each of the original communities.
+  
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/sample_filtering/exome/') 
+```
+
+#### Parameters
+
+```{r}
+# Adjust this so it is consistent with f1_exome.sample.filtering.Rmd (it is not a parameter of this script per se, just used for titles)
+min.cov=0.5
+```
+
+#### Library
+```{r library, message=FALSE, warning=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(readxl)
+library(plyr)
+library(tidyr)
+library(stringr)
+library(igraph)
+library(RColorBrewer)
+library(grid) 
+library(gridExtra)
+library(ggvenn)
+
+output_dir="output/"
+ngsrelate_output_dir="../../ngsrelate/exome/output"
+```
+
+#### Read in data
+
+```{r}
+exome_pc1.hc.c=read.csv(paste0(output_dir, "/f1/f1.metadata.csv"), check.names = FALSE)
+filter.table=read.csv(paste0(output_dir, "/f1/f1.filtertable.csv"), check.names = FALSE)
+com.list=as.vector(t(read.table(paste0(output_dir, "/com.list.txt")))[,1])
+```
+
+## ANGSD
+
+ANGSD was run again on myriad, this time community by community as that is how we want to run ngsRelate. The contents of the shell script used `/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/scripts/mapped.on.target/run_angsd_f1.coms_doMajorMinor.1_snp.p.1e-6_minMAF.5pct_glf` is shown below.
+
+```{bash eval=FALSE}
+# Load modules
+module load htslib
+
+# Run ANGSD
+for POP in c.Bateke c.CampoMaan c.Conkouati c.Goualougo c.Invindo c.LaBelgique c.Loango c.Lope c.MtsdeCristal e.Bili e.Budongo e.Bwindi e.Chinko e.Gishwati e.IssaValley e.Ituri e.Kabogo e.Ngiri e.Ngogo e.Nyungwe e.Regomuki e.RubiTele n.Gashaka n.Korup n.Mbe n.MtCameroon w.Azagny w.Bafing w.Bakoun w.Bia w.Boe w.BoundialeOdienne w.Comoe2 w.ComoeCNPN w.ComoeEAST w.ComoeGEPRENAF w.ComoeWEST w.Dindefelo w.Djouroutou w.EastNimba w.Grebo w.Kayan w.Loma w.MtSangbe w.OutambaKilimi w.Sangaredi w.Sapo w.Sobeya w.Sobory w.TaiEco w.TaiR w.ZooAnkasa
+do
+/usr/bin/time --verbose \
+~/bin/angsd/angsd \
+-b /home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/f1_pc1_hc.1pct_coverage.0.5x/bam.filelist.${POP} \
+-out ${POP}/${POP} \
+-ref ~/Scratch/data/ref_genomes/hg19.fa \
+-anc ~/Scratch/data/ref_genomes/homo_sapiens_ancestor_GRCh37_e71/homo_sapiens_ancestor_fullgenome.fa \
+-uniqueOnly 1 \
+-remove_bads 1 \
+-only_proper_pairs 1 \
+-trim 0 \
+-C 50 \
+-baq 1 \
+-skipTriallelic 1 \
+-gl 2 \
+-minMapQ 30 \
+-nThreads 20 \
+-doGlf 3 \
+-doMajorMinor 1 \
+-doMaf 1 \
+-minMaf 0.05 \
+-SNP_pval 1e-6
+done
+```
+
+## ngsRelate
+
+https://github.com/ANGSD/NgsRelate
+
+ngsRelate was then run on myriad using the job script `/home/ucfajos/analysis/phase1and2_exome_analysis/ngsrelate/scripts/mapped.on.target/run_ngsrelate_f1.all.sh` (23/03/2021). Below shows the contents of this script.
+
+The bam file list is provided as the ID list so the sample name is associated with the output.
+
+```{bash eval=FALSE}
+#################################### INFO ###################################
+# Prior to this, have we generated a file with allele frequencies (*.mafs.gz) and a file with genotype likelihoods (*.glf.gz)
+# We are running ngsRelate community by community as substructure messes up the results (according to Claudia)
+# The parameters used are exactly the same as Claudia sent me on 10/03/2021 (note the slight difference in that I need to do `-cut f7` rather than f6 as my .mafs.gz file 
+## has a column for the ancestral allele too)
+#################################### JOB ####################################
+
+INDIR='/home/ucfajos/Scratch/output/phase1and2_exome_output/angsd_output/mapped.on.target/f1.coms_doMajorMinor.1_snp.p.1e-6_minMAF.5pct_glf'
+BAMLIST_DIR='/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/f1_pc1_hc.1pct_coverage.0.5x/'
+
+for POP in c.Bateke c.CampoMaan c.Conkouati c.Goualougo c.Invindo c.LaBelgique c.Loango c.Lope c.MtsdeCristal e.Bili e.Budongo e.Bwindi e.Chinko e.Gishwati e.IssaValley e.Ituri e.Kabogo e.Ngiri e.Ngogo e.Nyungwe e.Regomuki e.RubiTele n.Gashaka n.Korup n.Mbe n.MtCameroon w.Azagny w.Bafing w.Bakoun w.Bia w.Boe w.BoundialeOdienne w.Comoe2 w.ComoeCNPN w.ComoeEAST w.ComoeGEPRENAF w.ComoeWEST w.Dindefelo w.Djouroutou w.EastNimba w.Grebo w.Kayan w.Loma w.MtSangbe w.OutambaKilimi w.Sangaredi w.Sapo w.Sobeya w.Sobory w.TaiEco w.TaiR w.ZooAnkasa
+        do
+        # We extract the frequency column from the allele frequency file and remove the header (to make it in the format ngsRelate needs)
+        zcat ${INDIR}/${POP}/${POP}.mafs.gz | cut -f7 | sed 1d >${POP}/${POP}.freq
+        # Get the number of samples in the community
+        NIND=`wc -l < ${BAMLIST_DIR}/bam.filelist.${POP}`
+        # Run ngsRelate
+        /usr/bin/time --verbose \
+        /home/ucfajos/bin/ngsRelate/ngsRelate \
+        -g ${INDIR}/${POP}/${POP}.glf.gz \
+        -z ${BAMLIST_DIR}/bam.filelist.${POP} \
+        -n ${NIND} \
+        -f ${POP}/${POP}.freq \
+        -O ${POP}/${POP}.ngsrelate.out
+done
+#################################### DONE ####################################
+```
+
+### Remove Related Individuals
+
+##### Why should we remove related individuals?
+
+There is an argument that you shouldn't remove related individuals in population genetics as it could lead to overestimates of diversity. However, our sample is very non-random with respect to the genetic population of chimps which we are sampling from. Instead we are sampling a community within this larger theoretical genetic population and so our sampling is not random. I therefore think we should remove relatives. This was also done with the chr21 analysis.
+
+Before the samples were sequenced, microsatelite arrays were used to filter out samples from the same individual or first order relatives already also so some relatedness filtering has already been done.
+
+##### Read in ngsRelate output
+
+ngsRelate was run community by community as population structure can affect the results. Here I combine the results into one big file to make things easier.
+
+```{r}
+# Read ngsRelate output
+## Combine into one big file 
+ngsrelate.out=data.frame()
+for(com in as.vector(com.list)){
+  com.dir=paste0(ngsrelate_output_dir, "/f1.coms_doMajorMinor.1_snp.p.1e-6_minMAF.5pct/", com, "/")
+  # If the directory is not empty (some communities have 0 samples after previous filtering) read in the ngsRelate output
+  if(length(list.files(com.dir, pattern=".ngsrelate.out$"))!=0){
+    com.result=read.table(paste0(com.dir, com, ".ngsrelate.out"), header=T)
+    # Combine results from each community into one large file
+    ngsrelate.out=rbind(ngsrelate.out, com.result)
+  }
+}
+#ngsrelate.out
+```
+
+Claudia said she identified first order relatives as pairs with a theta >0.1875 (emailed on 16/03/2021). In cases where there were related samples, she kept the one with the highest coverage.
+
+```{r}
+# Pull out related pairs
+related.pairs=ngsrelate.out[ngsrelate.out$theta>0.1875,c("ida", "idb", "theta")]
+# Remove file suffix from id columns to leave Sample names 
+related.pairs$ida=gsub('_exome.addRG.bam', '', related.pairs$ida)
+related.pairs$idb=gsub('_exome.addRG.bam', '', related.pairs$idb)
+#related.pairs
+```
+
+Visualise these relationships as a graph.
+https://kateto.net/wp-content/uploads/2016/06/Polnet%202016%20R%20Network%20Visualization%20Workshop.pdf
+
+```{r}
+# Save plot
+pdf(paste0(output_dir, "/f2/related.samples.pdf"))
+related.samples=plot(graph.data.frame(related.pairs, directed=FALSE),
+     vertex.color="black", vertex.size=5, vertex.label="", edge.width=5, main="Related Samples")
+print(related.samples)
+dev.off()
+# Display pplot
+plot(graph.data.frame(related.pairs, directed=FALSE),
+     vertex.color="black", vertex.size=5, vertex.label="", edge.width=5, main="Related Samples")
+```
+
+```{r}
+gdf=graph.data.frame(related.pairs, directed=FALSE)
+# node colour
+sample_col=exome_pc1.hc.c[, c("Sample", "Subspecies")]
+sample_col$col=NA
+sample_col[sample_col$Subspecies=="Central", "col"]="green3"
+sample_col[sample_col$Subspecies=="Eastern", "col"]="darkorange"
+sample_col[sample_col$Subspecies=="Nigeria-Cameroon", "col"]="red"
+sample_col[sample_col$Subspecies=="Western", "col"]="blue"
+
+sample_col_v=sample_col$col
+names(sample_col_v)=sample_col$Sample
+sample_col_v=sample_col_v[V(gdf)$name]
+V(gdf)$color=sample_col_v[V(gdf)$name]
+
+# Plot
+plot(gdf, vertex.size=5, vertex.label="", edge.width=5, main="Related Samples")
+```
+
+We can see that in a majority of cases, one sample is related to one other and that is it. We have a few clusters containing at least one sample which is related to more than one other. I split these into "simple.pairs" and "complex" respectively as the simple cases can be automated while the complex stage requires you to manually check and enter the clusters.
+
+```{r out.width="50%"}
+simple.pairs=data.frame()
+complex=data.frame()
+for(pair in 1:nrow(related.pairs)){
+  A=related.pairs[pair, 1]
+  B=related.pairs[pair, 2]
+  # If each sample in a pair only appears once in the table of related samples -> it is a simple pair
+  if(nrow(related.pairs[related.pairs$ida==A | related.pairs$idb==A,])==1 & nrow(related.pairs[related.pairs$ida==B | related.pairs$idb==B,]==1)){
+    simple.pairs=rbind(simple.pairs, related.pairs[pair,])
+  }
+  # If a sample appears more than once in the table -> it is part of a more complex relationship involving >1 other sample
+  else{complex=rbind(complex, related.pairs[pair,])}
+}
+
+# Plot graphs to check the classification worked
+## Plotting using a for loop means they are show side by side in knitted markdown
+plots=list(graph.data.frame(simple.pairs, directed=FALSE), graph.data.frame(complex, directed=FALSE))
+colours=c("white", "black")
+for(i in 1:2){plot(plots[[i]], vertex.color=colours[i], vertex.label="", edge.width=5, vertex.size=7)}
+```
+
+It works.
+
+### Simple cases
+
+Here I just select the sample with the lowest coverage to be removed.
+
+```{r}
+related.low.cov=c()
+for(pair in 1:nrow(simple.pairs)){
+  A=simple.pairs[pair, 'ida']
+  B=simple.pairs[pair, 'idb']
+  # Select relavent rows in metadata
+  pair.data=exome_pc1.hc.c[exome_pc1.hc.c$Sample==A | exome_pc1.hc.c$Sample==B, ]
+  # Select sample with lowest coverage
+  low.cov.sample=pair.data[which.min(pair.data$Coverage), 'Sample']
+  # Add low coverage sample to list of samples to exclude
+  related.low.cov=c(related.low.cov, low.cov.sample)
+}
+related.low.cov
+```
+
+### Complex cases - ! MANUAL STAGE !
+
+**!!! If I change any of the upstream parameters I will need to check this and may need to manually adjust it!!!**
+
+```{r}
+# Check that parameters are the same as default
+if(nrow(related.pairs)!=51 | min.cov!=0.5 | nrow(exome_pc1.hc.c)!=467){
+  stop("Have you changed parameters from the default? (PC1>-0.01, human contaimation<1%, coverage>0.5x)? If so you need to check this section as the ngsRelate results may have changed")
+}
+# Plot relationships, labelled with sample name
+plot(graph.data.frame(complex, directed=FALSE), vertex.color="red", edge.width=5)
+```
+
+We can see that all these relationships are triangular (can't think of a better word) i.e. we never find relationships such as focal individual, mother and maternal uncle (in which case we could keep the son and uncle and discard the mother), instead they are all more like focal individual, brother and mother or just multiple samples from the same individual. Some theta values approach 0.5 suggesting that there may be multiple samples from the same individual.
+
+I now remove samples from these triplets (which I call families) with the lowest coverages (and keep the sample with the single highest coverage).
+
+```{r}
+families=list(c("MTC2-31", "MTC2-33", "MTC2-7"), 
+              c("Gis1-10", "Gis1-6", "Gis2-2"),
+              c("Mbe1-12", "Mbe1-15", "Mbe1-26"),
+              c("Nim1-49", "Nim1-51", "Nim1-52"),
+              c("Nim1-78", "Nim1-79", "Nim2-44"))
+for(family in families){
+  # Get metadata for each sample in a family
+  family.data=exome_pc1.hc.c[exome_pc1.hc.c$Sample %in% family, ]
+  # Select samples which do not have the maximum coverage in the family
+  low.cov.sample=family.data[-which.max(family.data$Coverage), 'Sample'] # Note the '-' before 'which.max' meaning we are selecting all but the highest coverage
+  # Add these samples to the existing list of samples to exclude
+  related.low.cov=c(related.low.cov, low.cov.sample)
+}
+related.low.cov
+```
+
+### Apply realtedness filter
+
+```{r}
+# Remove samples which are related and have the lowest coverage(s) in their pair or 'families'
+exome_pc1.hc.c.rel=exome_pc1.hc.c[!(exome_pc1.hc.c$Sample %in% related.low.cov), ]
+#exome_pc1.hc.c.rel
+```
+
+#### Filter table
+
+```{r}
+filter.table=rbind(filter.table, c("f2", paste0("No Relatives"),
+                                   nrow(exome_pc1.hc.c.rel), 
+                                   paste0(round(nrow(exome_pc1.hc.c.rel)/(as.numeric(filter.table[1, 'Number of Samples']))*100, digits = 2), "%")))
+filter.table
+# Write filter table
+write.csv(filter.table, paste0(output_dir, "/f2/f2.filtertable.csv"), row.names=F)
+```
+
+### Write BAM file lists
+
+We have now removed samples with contamination and/or low coverage and also removed related samples. I now want to run some basic demographic analyses to check that all samples cluster correctly with their communities. If samples fail to cluster correctly then there is an issue of either sample quality or sample swaps. I write BAM file lists so I can run ANGSD again and then run PCAngsd and NGSadmix. 
+
+#### All
+
+```{r}
+# Ensure it is ordered according to sample name
+exome_pc1.hc.c.rel=exome_pc1.hc.c.rel[order(exome_pc1.hc.c.rel$Sample),]
+# All
+write.table(exome_pc1.hc.c.rel$BAM.mapped.on.target, paste0(output_dir, "/bam.filelists/exome/f2_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel/bam.filelist.all"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+#### Subspecies
+
+```{r}
+# Central
+write.table(exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Central",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f2_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel/bam.filelist.c"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Eastern
+write.table(exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Eastern",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f2_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel/bam.filelist.e"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Nigeria-Cameroon
+write.table(exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Nigeria-Cameroon",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f2_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel/bam.filelist.n"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Western
+write.table(exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Western",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f2_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel/bam.filelist.w"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+```{bash eval=FALSE}
+scp -r output/bam.filelists/exome/f2_pc1_hc.1pct_coverage.*x_rm.rel/ myriad:/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/
+```
+
+#### Coverage of remaining samples
+
+Average coverage should have gone up a bit as I removed the related individuals with lower coverage.
+
+```{r}
+cat(paste(paste0("Mean..."),
+          paste0(" Mean coverage before relatedness filtering: ", mean(exome_pc1.hc.c$Coverage)),
+          paste0(" Mean coverage after relatedness filtering: ", mean(exome_pc1.hc.c.rel$Coverage)),
+          paste0("Median..."),
+          paste0(" Median coverage before relatedness filtering: ", median(exome_pc1.hc.c$Coverage)),
+          paste0(" Median coverage after relatedness filtering: ", median(exome_pc1.hc.c.rel$Coverage)), 
+          sep="\n"))
+```
+
+## Compare to chr21 filtering 
+
+How many samples pass this stage of filtering for both the exomes and chr21? This may be important if we want to run analyses on chr21 as a 'null' comparison with no selection.
+
+```{r}
+chr21=read_excel("../meta.data/TableS1_forAida.xlsx")
+chr21_pc1.hc.c.rel=chr21[chr21$`PCA ssp; ADMIXTURE; SFS;FST;Het; Diversity; admixfrog. Filters: HC <1%, > 0.5x, no related N=449`=="Yes",]
+
+ggvenn(list("Exome"=exome_pc1.hc.c.rel$Sample, "chr21"=chr21_pc1.hc.c.rel$Sample), fill_color=c("red", "yellow"), stroke_size = 0.5)
+```
+
+## Write metadata
+
+```{r}
+write.table(exome_pc1.hc.c.rel, paste0(output_dir, "/f2/f2.metadata.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+```
+
+## Write individual filter for running PCAngsd per subspecies using beagle file from all samples
+
+```{r}
+exome_pc1.hc.c.rel$central=0
+exome_pc1.hc.c.rel$eastern=0
+exome_pc1.hc.c.rel$nigeria.cameroon=0
+exome_pc1.hc.c.rel$western=0
+
+exome_pc1.hc.c.rel$central[exome_pc1.hc.c.rel$Subspecies == "Central"] = 1
+exome_pc1.hc.c.rel$eastern[exome_pc1.hc.c.rel$Subspecies == "Eastern"] = 1
+exome_pc1.hc.c.rel$nigeria.cameroon[exome_pc1.hc.c.rel$Subspecies == "Nigeria-Cameroon"] = 1
+exome_pc1.hc.c.rel$western[exome_pc1.hc.c.rel$Subspecies == "Western"] = 1
+
+
+write.table(t(exome_pc1.hc.c.rel$central), paste0(output_dir, "/f2/pcangsd/c.inds"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(t(exome_pc1.hc.c.rel$eastern), paste0(output_dir, "/f2/pcangsd/e.inds"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(t(exome_pc1.hc.c.rel$nigeria.cameroon), paste0(output_dir, "/f2/pcangsd/n.inds"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(t(exome_pc1.hc.c.rel$western), paste0(output_dir, "/f2/pcangsd/w.inds"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+```{bash eval=FALSE}
+scp output/f2/pcangsd/* myriad:/home/ucfajos/analysis/phase1and2_exome_analysis/pcangsd/ind.filters/mapped.on.target/f2/
+```
+
+# NEXT
+
+f3_exome.sample.filtering.Rmd runs PCAngsd and NGSadmix to identify samples which pass these threholds but still do not behave.
+
+
+
+
+

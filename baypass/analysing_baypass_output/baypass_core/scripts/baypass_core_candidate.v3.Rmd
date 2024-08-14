@@ -1,0 +1,299 @@
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_core/') 
+```
+
+#### Parameters
+
+```{r}
+subsps=c('c', 'e', 'ce')
+over_write=FALSE
+tails=c(0.005, 0.001, 0.0005)
+flanks=1000
+```
+
+---
+title: "`r paste0("BayPass Core Select Candidates")`"
+subtitle: "`r paste0("Subspecies datasets: ", paste(subsps, collapse = ", "))`"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Here I extract candidates from running the BayPass core model for all subspecies datasets.
+
+BayPass output files we formatted with `./format_baypass_core_output.Rmd` where SNP coordinates, gene annotations, coverage data and results from multiple independent runs were added. Statistics with no suffix represent results from the focal run (e.g. 'XtXst'), and statistics from the the two repeat runs have the suffixes '.r1' and '.r2' (e.g. 'XtXst.r1' and 'XtXst.r2'). Median values have also been calculated. 
+
+#### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(dplyr)
+library(ggplot2)
+library(ggVennDiagram)
+library(psych)
+library(tidyverse)
+library(cowplot)
+library(reshape)
+library(ggpattern)
+library(viridis) 
+# Call scripts containing custom functions 
+source("../scripts/baypass_tools.R")
+source("scripts/baypass_core_tools.R")
+source("scripts/candidate_allele_frequency_patterns.R")
+source("../baypass_aux/scripts/baypass_aux_tools.R")
+
+# In
+formatted_core_out_dir="output/formatted_baypass_core_output/"
+exome_baypass_out_dir="../../running_baypass/exome/output/"
+chr21_baypass_out_dir="../../running_baypass/chr21/output/"
+
+# Out
+formatted_core_out_fprs_dir="output/baypass_core_output_with_fprs/"
+gowinda_snp_file_dir="../../../gowinda/baypass_core/output/gowinda_input/snp_files/"
+```
+
+#### Read in data
+
+```{r echo=FALSE}
+# Subspecies specific files
+xtx=list()
+xtx_ann=list()
+subsp.col=list()
+allele.freq=list()
+pi_para=list()
+## chr21
+xtx_chr21=list()
+
+for(subsp in subsps){
+  cat("-", subsp, "\n")
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  # Allele frequencies
+  allele.freq[[subsp]]=fread(paste0(formatted_core_out_dir, "/f5", subsp.file,
+          ".pops_missing.pops.", miss.pop,"_minMAC2_summary_pij.out_pop.info"))
+  ## Population names
+  pops=unique(allele.freq[[subsp]]$Population)
+  pops=pops[order(pops)]
+  ### Population colours (according to subspecies)
+  subsp.col[[subsp]]=c()
+  for(pop in pops){
+    if(startsWith(pop, "c.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "green3")}
+    if(startsWith(pop, "e.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "darkorange")}
+    if(startsWith(pop, "n.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "red")}
+    if(startsWith(pop, "w.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "blue")}
+  }
+  # Read BayPass core output
+  ## Exome
+  ### Annotated
+  xtx_ann[[subsp]]=fread(paste0(formatted_core_out_dir, "/f5",
+                            subsp.file,".pops_missing.pops.", miss.pop,"_minMAC2_summary_pi_xtx.out_row.per.gtf.annot_5000bp.flanks"))
+  xtx_ann[[subsp]][xtx_ann[[subsp]]$gene=='.','gene']=NA
+  ### Line per SNP
+  xtx[[subsp]]=unique(xtx_ann[[subsp]][,colnames(xtx_ann[[subsp]])!='gene'])
+  ## chr21
+  xtx_chr21[[subsp]]=fread(paste0(formatted_core_out_dir, "/chr21.f7",
+                            subsp.file,".pops_missing.pops.", miss.pop,"_minMAC2.non-genic_1000bp.flanks_summary_pi_xtx_formatted"))
+  ## Pi prior parameters
+  seed_suffixs=c("", "_seed.100", "_seed.10k")
+  for(run in 1:3){
+    pi_para[[subsp]][['exome']][[run]]=fread(paste0(exome_baypass_out_dir, "/f5", 
+                                                    subsp.file, ".pops_minInd.6or50pct_missing.pops.", miss.pop, "_minMAC2/core/f5", 
+                                                    subsp.file, ".pops_missing.pops.", miss.pop, "_minMAC2", seed_suffixs[run], "_summary_beta_params.out"))
+    pi_para[[subsp]][['chr21']][[run]]=fread(paste0(chr21_baypass_out_dir, "/chr21.f7", 
+                                                    subsp.file, ".pops_minInd.6or50pct_missing.pops.", miss.pop, "_minMAC2.non-genic_1000bp.flanks/core/chr21.f7", 
+                                                    subsp.file, ".pops_missing.pops.", miss.pop, "_minMAC2.non-genic_1000bp.flanks", seed_suffixs[run], "_summary_beta_params.out"))
+  }
+}
+
+titles=list("all"="All Subspecies", "ce"="Central-Eastern", "n"="Nigeria-Cameroon", "w"="Western")
+```
+
+# Candidate SNPs
+
+## Use chi squared to Select Candidates
+
+NB: These are results from a single run (not median over multiple).
+
+```{r echo=FALSE, out.width="33%", message=FALSE, warning=FALSE}
+for(subsp in subsps){
+  binwidth=0.01
+  p_plot=ggplot(NULL) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5)) +
+    labs(title=paste0(titles[[subsp]]), x="p-value", y="Density") +
+    stat_bin(aes(x=10^-xtx[[subsp]]$log10_pval, y = ..density..), alpha=1, binwidth=binwidth, geom="step", position=position_nudge(x=-0.5*binwidth)) +
+    geom_histogram(aes(x=10^-xtx[[subsp]]$log10_pval, y = ..density..), alpha=0.5, binwidth=binwidth, fill="black", size=0) +
+    geom_hline(yintercept=1, lty=2)
+  print(p_plot)
+}
+```
+
+Ideally, the p-value distribution should be flat around 1 and then have an excess at the low end due to selection. Our p-values are not 'well behaved' and do not show an excess so the chi squared distribution cannot be used as a null here.
+
+## Null vs real data
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%"}
+for(subsp in subsps){
+  for(stat in 'XtXst.med'){
+    plot_xtx(xtx[[subsp]], xtx_chr21[[subsp]], stat=stat, title=titles[[subsp]], chi_df=length(subsp.col[[subsp]]))
+  }
+}
+```
+
+# Select candidates
+
+## Calculate FPR per coverage bin
+
+We found that candidates were more likely to have lower coverages than expected from the background. We therefore decided to calculate FPRs within candidate bins to account for this.
+
+FPRs are estimated using a null distribution. SNPs in the null distribution are assigned empirical p values (BF rank/total number of SNPs). The null data is then combined with the exome data and ordered by BF. The FPR for each of the exome SNP is given as the smallest empirical p value of any null SNP with a lower or equal BF.
+
+##### Example (winthin a single coverage bin): 
+
+```
+Null XtXst: 0   1   1   4   8
+  Ranks:    5   4   4   2   1
+  p:        1   0.8 0.8 0.4 0.2
+  
+Exome XtXst:0   2   3   9   10
+  FDR:      1   0.8 0.8 0.2 0.2
+```
+  
+We can see that in tied instances we use the lowest rank and that the minimum FPR possible is determined by the number of null SNPs.
+
+This is done for each coverage bin.
+
+```{r echo=FALSE}
+source("scripts/baypass_core_tools.R")
+over_write=FALSE
+xtx_fpr=list()
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  file=paste0(formatted_core_out_fprs_dir, "/f5", subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_summary_pi_xtx.fpr", ".non-genic_",flanks,"bp.flanks")
+  if(file.exists(file) & over_write==FALSE){
+    xtx_fpr[[subsp]]=fread(file)
+  }else{
+    # Note that this function requires lists of data frames as inputs and outputs
+    out=assign_fpr_core(xtx[subsp], xtx_chr21[subsp], n_bins=5, tail_bin_size=0.1)
+    # Write FPR data
+    write.table(out[[subsp]], file, row.names=F, sep="\t")
+    xtx_fpr[[subsp]]=out[[subsp]]
+  }
+}
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", fig.width=4.5, fig.height=3.5}
+plot_fpr_stats_core.v2(xtx_fpr, null=xtx_chr21, fprs=tails, top.cov=0.025, N_SNPs=FALSE, BF_thresh=FALSE, coverage=TRUE)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", fig.width=3, fig.height=3}
+plot_fpr_stats_core.v2(xtx_fpr, null=xtx_chr21, fprs=tails, top.cov=0.025, N_SNPs=FALSE, BF_thresh=TRUE, coverage=FALSE)
+```
+
+```{r fig.height=3, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+fdr.df.core=plot_fpr_stats_main.v4(xtx_fpr, xtx_chr21, fprs=tails)
+```
+
+**NB: Estimated for the number of null SNPs in a bin are inaccurate here**. I have to estimate the number of null SNPs in each bin from FPR stats and this relies on the assumption that the highest ranking SNP is an exome SNP (which of course is unlikely the case of the core output). I have checked and this artefact is certainly introduced in this plotting stage in plot_fpr_stats_core() rather than FPR calculation in assign_fpr_core(). This explains why bin 3 always seems to have lots of null SNPs compared to the others e.g. by assuming that the top ranked exome SNP in bin 2 of westerns is actually 2 rather than 1 (i.e. there is a null SNP with a higher value), we estimate the correct number of SNPs. i.e. there are not shown to be too many SNPs in bin 3 but too little in the others.
+
+FPR conclusions
+
+- We do not find genome-wide evidence of selection using only genetics because we do not have an excess of highly differentiated SNPs in the exomes compared to the null (non-genic regions of chr21).
+
+- We find less SNPs with high allele frequency differentiation in the exomes than in the null likely due to more purifying selection in the exomes.
+
+- Nevertheless, it is interesting to investigate the SNPs with the strongest signatures of selection in the exomes as there may still be some true signals in here.
+
+```{r}
+#cand_stat='empirical_p_med_cov'
+cand_stat='fpr'
+```
+
+# Candidate Overlap
+
+```{r echo=FALSE, out.width="50%"}
+# Only common sites
+xtx_fpr_com=xtx_fpr %>% reduce(inner_join, by = c("chr", "pos"))
+xtx_fpr_com=unique(xtx_fpr_com[,c("chr", "pos")])
+# Add gene annotations in case I want to use FPR
+xtx_fpr_ann=list()
+xtx_fpr_ann_comm=list()
+for(subsp in subsps){
+  if(subsp=='all'){subspecies="All Subspecies"}
+  if(subsp=='c'){subspecies="Central"}
+  if(subsp=='e'){subspecies="Eastern"}
+  if(subsp=='ce'){subspecies="Central-Eastern"}
+  if(subsp=='n'){subspecies="Nigeria-Cameroon"}
+  if(subsp=='w'){subspecies="Western"}
+  xtx_fpr_ann[[subspecies]]=merge(xtx_fpr[[subsp]], xtx_ann[[subsp]][,c('chr', 'pos', 'gene')], by=c('chr', 'pos'), all.x=TRUE)
+  xtx_fpr_ann_comm[[subspecies]]=merge(xtx_fpr_com, xtx_fpr_ann[[subspecies]], by=c('chr', 'pos'), all.x=TRUE)
+}
+# All sites
+candidate_overlap_core(xtx_fpr_ann, stat=cand_stat, tails=c(1, 0.005, 0.001, 0.0005))
+# Only common sites
+cat("Common SNPs only")
+candidate_overlap_core(xtx_fpr_ann_comm, stat=cand_stat, tails=c(1, 0.005, 0.001, 0.0005))
+```
+
+# Write gowinda files
+
+```{r}
+for(tail in tails){
+  for(subsp in subsps){
+    if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+    if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+    if(cand_stat=='fpr'){suffix=paste0(".fpr", 100*tail, "pct.non-genic_",flanks,"bp.flanks")}
+    if(cand_stat=='empirical_p_med_cov'){suffix=paste0(".", 100*tail,'pct-cov_cor')}
+    # Write Gowinda input files
+    write.table(unique(xtx_fpr[[subsp]][xtx_fpr[[subsp]][[cand_stat]]<tail, c("chr", "pos")]), 
+                  paste0(gowinda_snp_file_dir, "/", subsp, "/", subsp, suffix),
+                col.names=F, row.names=F, sep="\t")
+  }
+}
+# Background SNPs
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  # Write Gowinda input files
+  write.table(unique(xtx_fpr[[subsp]][, c("chr", "pos")]), 
+                paste0(gowinda_snp_file_dir, "/", subsp, "/", subsp, "_bg.snps"),
+              col.names=F, row.names=F, sep="\t")
+}
+```
+
+## Nigeria-Cameroon
+
+I create separate files for SNPs with higher DAF in Gashaka or KorupMtCameroon
+
+```{r eval=FALSE}
+cand_stat='fpr'
+for(tail in tails){
+  for(subsp in 'n'){
+    if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+    if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+    if(cand_stat=='fpr'){suffix=paste0(".fpr", 100*tail, "pct.non-genic_",flanks,"bp.flanks")}
+    if(cand_stat=='empirical_p_med_cov'){suffix=paste0(".", 100*tail,'pct-cov_cor')}
+    
+    
+    # Allele frequency stats per SNP per population
+    tmp=allele.freq[['n']][c('chr', 'pos', 'M_P', 'Population')]
+    
+    tmp=spread(tmp, key = Population, value = M_P)
+    tmp$Gashaka_minus_KorupMtCameroon=tmp$n.Gashaka-tmp$n.KorupMtCameroon
+    tmp=merge(xtx_fpr[[subsp]], tmp[c('chr', 'pos', 'Gashaka_minus_KorupMtCameroon')], by=c('chr', 'pos'))
+    
+    # Write Gowinda input files - I write them in the aux directory as what we are doing here is separating forest (KorupMtCameroon) and 'savannah' (Gashaka) candidates 
+    write.table(unique(tmp[tmp[[cand_stat]]<tail & tmp$Gashaka_minus_KorupMtCameroon>0, c("chr", "pos")]), 
+                  paste0("../../../gowinda/baypass_aux/output/gowinda_input/snp_files/f_over_sum_known_trees/n.f_over_sum_known_trees-f_over_sum_known_trees.fpr", 100*tail, "pct.non-genic_1000bp.flanks.neg_beta"),
+                col.names=F, row.names=F, sep="\t")
+    write.table(unique(tmp[tmp[[cand_stat]]<tail & tmp$Gashaka_minus_KorupMtCameroon<0, c("chr", "pos")]), 
+                  paste0("../../../gowinda/baypass_aux/output/gowinda_input/snp_files/f_over_sum_known_trees/n.f_over_sum_known_trees-f_over_sum_known_trees.fpr", 100*tail, "pct.non-genic_1000bp.flanks.pos_beta"),
+                col.names=F, row.names=F, sep="\t")
+  }
+}
+```

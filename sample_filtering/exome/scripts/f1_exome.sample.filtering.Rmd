@@ -1,0 +1,530 @@
+---
+title: "Exome Sample Filtering: Remove Contaminated and Low Coverage Samples (f1)"
+author: "Harrison Ostridge"
+date: "08/03/2021"
+output: html_document
+---
+
+**f1_exome.sample.filtering.Rmd - Remove Contaminated and Low Coverage Samples.**
+  - PC1 threshold.
+  - <1% human contamination.
+  - >0.5x coverage.
+
+f2_exome.sample.filtering.Rmd - Remove Related Samples.
+  - Remove first order relatives as estimated using ngsRelate.
+
+f3_exome.sample.filtering.Rmd - Remove Samples Which Do Not Cluster Correctly in Demographic Analyses.
+  - Analyse PCAngsd and NGSadmix results.
+  - Identify poor quality samples and sample swaps.
+
+f4_exome.sample.filtering.Rmd - Reassign Swapped Samples
+  - Identify samples which have been misslabeled and reassign them to their correct communities
+
+f5_exome.sample.filtering.Rmd - Remove Related Swapped Samples
+  - After reassigning swapped samples, we need to check they are not related to samples in their new (correct) communities.
+  - This is needed because the first stage of removing relatives was ran within each of the original communities.
+  
+#### Setup
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/sample_filtering/exome') 
+```
+
+#### Library
+```{r library, message=FALSE, warning=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(readxl)
+library(plyr)
+library(tidyr)
+library(stringr)
+library(igraph)
+library(RColorBrewer)
+library(ggvenn)
+library(grid) 
+library(gridExtra)
+
+meta_data_dir="../meta.data/"
+output_dir="output/"
+pcangsd_output_dir="../../pcangsd/exome/output/"
+```
+
+#### Read in data
+
+Claudia sent me this metadata file on 08/03/2021. I have saved it as read only to prevent accidental changes (exterbal to R scripts).
+
+The data is always ordered according to sample name. It is very important to maintain the correct order in order to match ANGSD outputs with samples. I always make sure it is in the correct order before writing any outputs. Note that the ordering can be different between R and bash, I always stick to the R ordering.
+
+```{r}
+# Exomes
+exome=read_excel(paste0(meta_data_dir, "/Metadata_exome_PanAf.xlsx"))
+## Order by sample
+exome=exome[order(exome$Sample),]
+## Add BAM file column (for making BAMfile lists to run ANGSD)
+exome$BAM.mapped.on.target=paste0('/home/ucfajos/Scratch/data/phase1and2_exomes/BAM.mapped.on.target/', exome$Sample, '_exome.addRG.bam')
+
+# chr21 (for comparison), sent by Claudia on 04/11/2021
+chr21=read_excel(paste0(meta_data_dir, "TableS1_forAida.xlsx"))
+```
+
+### Add community code column
+
+I use a specific naming convention for communities. I remove special characters and add a prefix for the subspecies the community belongs to. This makes life much easier when I want to split subspecies and removing special characters also reduces headaches downstream.
+
+I call the new column 'Community' to distinguish it from 'Site' which Claudia uses (I also don't like "site" as it gets confusing when we start to talk about genomic sites).
+
+```{r}
+# Remove special characters
+exome$Community=exome$Site
+exome$Community=gsub( "[[:punct:]]", "", as.character(exome$Community))
+exome$Community<-gsub( " ", "", as.character(exome$Community))
+# Add subspecies prefix
+for(row in 1:nrow(exome)){
+  if((exome[row, "Subspecies"]=="Central")){
+    exome[row, "Community"]=paste0('c.', exome$Community[row])
+  }
+  if((exome[row, "Subspecies"]=="Eastern")){
+    exome[row, "Community"]=paste0('e.', exome$Community[row])
+  }
+  if((exome[row, "Subspecies"]=="Nigeria-Cameroon")){
+    exome[row, "Community"]=paste0('n.', exome$Community[row])
+  }
+  if((exome[row, "Subspecies"]=="Western")){
+    exome[row, "Community"]=paste0('w.', exome$Community[row])
+  }
+}
+```
+
+### Samples per community
+
+```{r}
+plot.sample.freq=function(meta.data, group="Community", title=NULL, output.file=NULL, hlines=F){
+  # Frequency per group
+  freq.per.group=data.frame(table(meta.data[[group]]))
+  # Rename columns
+  colnames(freq.per.group)=c(group, "Freq")
+  # Add subspecies information
+  freq.per.group=merge(freq.per.group, unique(meta.data[,c(group, "Subspecies")]))
+  # Order by frequency
+  freq.per.group=freq.per.group[order(freq.per.group$Subspecies, freq.per.group$Freq),]
+  # Make group type factor
+  freq.per.group[[group]]=factor(freq.per.group[[group]], levels=unique(freq.per.group[[group]]))
+  # Change Nigeria-Cameroon title so it fits in the plot
+  freq.per.group$Subspecies[freq.per.group$Subspecies=="Nigeria-Cameroon"] = "N-C"
+  # Plot
+  freq.per.group.plot=ggplot(freq.per.group) +
+    theme_bw() +
+    geom_bar(aes(as.factor(.data[[group]]), Freq, fill=Subspecies), stat="identity") +
+    facet_grid(.~Subspecies, space="free", scales="free_x") + 
+    theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1), legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+    labs(title=title, x=paste0(group), y = "Number of Samples") +
+    scale_fill_manual(values = c('green3', 'darkorange', 'red', 'blue'))
+  if(hlines==T){
+    freq.per.group.plot=freq.per.group.plot+
+      geom_hline(yintercept = 6, linetype="dashed")+
+      geom_hline(yintercept = 8, linetype="dashed", colour="darkgrey")}
+  # Save plot
+  if(!is.null(output.file)){ggsave(paste0(output.file), freq.per.group.plot, height=6, width=10)}
+  # Show plot
+  print(freq.per.group.plot)
+}
+```
+
+```{r}
+plot.sample.freq(exome, title="Total Samples per Community", output.file=paste0(output_dir, "/f0/f0_samples.per.com.pdf"))
+```
+
+### Get stats for unfiltered data
+
+```{r}
+# Sample sizes
+cat("Number of communities: ", length(unique(exome$Community)), "\n")
+freq.per.group=data.frame(table(exome$Community))
+cat("Mean samples per community: ", mean(freq.per.group$Freq), "\n")
+cat("Max samples per community: ", max(freq.per.group$Freq), "\n")
+cat("Min samples per community: ", min(freq.per.group$Freq), "\n")
+table(unique(exome[c('Community', 'Subspecies')])$Subspecies)
+# Coverage
+cat("Median coverage: ", median(exome$Coverage), "\nMax coverage: ", max(exome$Coverage), "\nMin coverage: ", min(exome$Coverage), "\n")
+sum(rowSums(table(unique(exome[, c("Subspecies", "Site")]))))
+nrow(exome[exome$Subspecies %in% c("Central", "Eastern"),])
+```
+
+### Write unfiltered BAM file list (f0)
+
+```{r}
+# Ensure it is ordered according to sample name
+exome=exome[order(exome$Sample),]
+write.table(exome$BAM.mapped.on.target, paste0(output_dir, "/bam.filelists/exome/f0_unfiltered/bam.filelist.all"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+Copy to myriad.
+
+```{bash eval=FALSE}
+scp output/bam.filelists/f0_unfiltered/bam.filelist.all myriad:/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/f0_unfiltered/
+```
+
+## ANGSD
+
+ANGSD was then run on myriad using the job script `/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/scripts/mapped.on.target/run_angsd_f0.all_minInd15_doMajorMinor.1_HWE.p.1e-3_beagle.sh` (15/03/2021). Below shows the contents of this shell script.
+
+```{bash eval=FALSE}
+#################################### INFO ####################################
+# This script is run with doMajorMinor 1 (to ensure no excess of high freq DAFs) and a HWE filter (to ensure no bump at 0.5 due to paralogs).
+# GLF is in beagle format for PCAngsd
+# The output is used to plot a PCA and perform the first stage of filtering (removing PC1 outliers)
+#################################### JOB ####################################
+# Load modules
+module load htslib
+# Run ANGSD
+/usr/bin/time --verbose \
+~/bin/angsd/angsd \
+-b /home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/f0_unfiltered/bam.filelist.all \
+-out f0.all \
+-ref ~/Scratch/data/ref_genomes/hg19.fa \
+-anc ~/Scratch/data/ref_genomes/homo_sapiens_ancestor_GRCh37_e71/homo_sapiens_ancestor_fullgenome.fa \
+-uniqueOnly 1 \
+-remove_bads 1 \
+-only_proper_pairs 1 \
+-trim 0 \
+-C 50 \
+-baq 1 \
+-minInd 15 \
+-skipTriallelic 1 \
+-GL 2 \
+-doGlf 2 \
+-minMapQ 30 \
+-nThreads 20 \
+-doMajorMinor 1 \
+-doMaf 2 \
+-SNP_pval 0.000001 \
+-minMaf 0.01 \
+-doHWE 1 \
+-minHWEpval 0.001 
+#################################### DONE ####################################
+```
+
+## PCAngsd
+
+PCAngsd was then run with the job script `/home/ucfajos/analysis/phase1and2_exome_analysis/pcangsd/scripts/mapped.on.target/run_pcangsd_f0.all.sh` (15/03/2021). Below shows the contents of this shell script.
+
+```{bash eval=FALSE}
+#################################### JOB ####################################
+INDIR='/home/ucfajos/Scratch/output/phase1and2_exome_output/angsd_output/mapped.on.target/f0.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01_beagle'
+# Load modules
+module load python3/3.7
+/usr/bin/time --verbose \
+python3 ~/bin/pcangsd/pcangsd.py \
+-beagle ${INDIR}/f0.all.beagle.gz \
+-o f0.all \
+-threads 10
+#################################### DONE ####################################
+```
+
+## Filtering
+
+#### Start filter table
+
+```{r}
+filter.table=data.frame(t(c("f0", "Unfiltered", nrow(exome), "100%")))
+colnames(filter.table)=c("Filter Name", "Filter", "Number of Samples", "% of Samples")
+filter.table
+```
+
+### PC1 outliers
+
+The purpose of this filter is to remove highly contaminated or non-chimp samples. Claudia ran BBsplit on chr21 outliers and found that samples may be heavily contaminated from humans or the diet of the chimps (which includes monkeys) and some samples were in fact from other large primates such as gorillas. This filter should remove such samples.
+
+#### Plot PCA
+
+```{r out.width="50%"}
+# Read in PCAngsd output
+cov=read.table(paste0(pcangsd_output_dir, "/f0.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/f0.all.cov"))
+pcs=eigen(cov)
+pc1.pc2=as.data.frame(pcs$vectors[,1:2])
+colnames(pc1.pc2)=c("f0.PC1", "f0.PC2")
+# This relies on the exome metadata file being in the same order as the BAM file input (this should be alphabetically ordered by sample name)
+exome=exome[order(exome$Sample),]
+pc1.pc2=cbind(exome[, c("Sample", "Site", "Subspecies")], pc1.pc2)
+
+# Percentage variance explained by PCs
+PC1.percent=pcs$values[1]/sum(pcs$values)*100
+PC2.percent=pcs$values[2]/sum(pcs$values)*100
+PC1.lab=paste("PC1 (", round(PC1.percent,digits = 2),"%)")
+PC2.lab=paste("PC2 (", round(PC2.percent,digits = 2),"%)")
+
+# PC1 vs PC2
+f0_pc1.vs.pc2=ggplot(pc1.pc2, aes(x=f0.PC1, y=f0.PC2, fill=Subspecies, colour=Subspecies, label = Sample)) +
+  theme_minimal()+ 
+  geom_point() + 
+  #geom_text(size = 3) +
+  labs(x=paste(PC1.lab), y=paste(PC2.lab)) + 
+  scale_fill_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+  scale_color_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+  geom_vline(xintercept = -0.01, linetype="dashed") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5)) + 
+  coord_equal()
+ggsave(paste0(output_dir, "/f0/f0_pc1.vs.pc2.pdf"), f0_pc1.vs.pc2)
+
+# PC1 density
+f0_pc1.density=ggplot(pc1.pc2) + 
+  theme_minimal()+ 
+  geom_density(aes(x=f0.PC1), col='black', fill='black',  alpha=0.3, adjust=0.5) +
+  labs(title="",x ="PC1", y = "Density") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5)) +
+  geom_vline(xintercept = -0.01, linetype="dashed")
+ggsave(paste0(output_dir, "/f0/f0_pc1.density.pdf"), f0_pc1.density)
+
+# Save as single figure
+f0_pc1.vs.pc2_grob=ggplotGrob(f0_pc1.vs.pc2)
+f0_pc1.density_grob=ggplotGrob(f0_pc1.density)
+#ggsave(paste0(output_dir, "f0/f0_pc1.vs.pc2.and.pc1.density.pdf"), 
+#       grid.arrange(f0_pc1.density_grob, f0_pc1.vs.pc2_grob,
+#                    ncol=2,
+#                    widths = c(3, 4)),
+#       width = 12)
+
+for(plot in list(f0_pc1.vs.pc2, f0_pc1.density)){print(plot)}
+```
+
+Looking at the density plot I chose a threshold of -0.01 as this appears to be the point at which the density starts to rise rapidly. I therefore only keep samples with a PC1 value >-0.01.
+
+Two peaks correspond to western and non-western samples. Both graphs look very similar to those produced using unfiltered chr21 samples.
+
+#### PC1 filter
+
+```{r}
+# Add PC1 value to metadata
+exome=merge(exome, pc1.pc2[,c("Sample", "f0.PC1")], by="Sample")
+# Apply threshold
+exome_pc1=exome[exome$f0.PC1>=(-0.01),]
+```
+
+#### Filter table
+
+```{r}
+filter.table=rbind(filter.table, c("", "PC1 > -0.01", nrow(exome_pc1), paste0(round(nrow(exome_pc1)/(as.numeric(filter.table[1, 'Number of Samples']))*100, digits = 2), "%")))
+filter.table
+```
+
+### Human contamination
+
+We chose a 1% cutoff because that is what Claudia did.
+
+```{r}
+# Set threshold
+hc.threshold=1
+
+# Apply threshold
+exome_pc1.hc=exome_pc1[exome_pc1$`Human Contamination (%)`<=hc.threshold,]
+
+# Plot (just to see what the data looks like, this doesn't affect out choice of threshold)
+hc.plot=ggplot(exome_pc1) + 
+  theme_minimal()+ 
+  geom_density(aes(x=`Human Contamination (%)`), col='black', fill='black',  alpha=0.3, adjust=0.5) +
+  labs(title="Human Contamination Density, PC1 >-0.01", x ="% Human Contamination", y = "Density") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_vline(xintercept = hc.threshold, linetype="dashed") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+ggsave(paste0(output_dir, "/f0/f0_hc.density.pdf"), hc.plot, width = 10, height=5)
+print(hc.plot)
+```
+
+#### Filter table
+
+```{r}
+filter.table=rbind(filter.table, c("", "Human Cont. < 1%", nrow(exome_pc1.hc),
+                                   paste0(round(nrow(exome_pc1.hc)/(as.numeric(filter.table[1, 'Number of Samples']))*100, digits = 2), "%")))
+filter.table
+```
+
+After this filter we are left with only samples which we are confident are not contaminated. 
+
+### Coverage
+
+We use a threshold of 0.5x as this was used for the chr21 analysis. However, the exomes are slightly lower coverage so we may end up with fewer individuals.
+
+We may need to think about this threshold. As we are estimating allele frequencies from genotype likelihoods, having a lower mean covered threshold and more individuals per population may result in more accurate estimates of allele frequency. I have tried using no threshold and the resulting PCAs show that very low coverage sample struggle to cluster with their subspecies so for now at least we will stick to 0.5x.
+
+```{r}
+# Set coverage threshold 
+min.cov=0.5
+# Apply coverage threshold
+exome_pc1.hc.c=exome_pc1.hc[exome_pc1.hc$Coverage>=min.cov,]
+
+# Plot 
+cov.plot=ggplot(exome_pc1.hc) + 
+  theme_minimal()+ 
+  geom_density(aes(x=Coverage), col='black', fill='black',  alpha=0.3, adjust=0.5) +
+  labs(title="Mean Coverage Density, PC1 outliers and Human Contamination >1% Removed", x ="Mean Coverage Per On-Target Site", y = "Density") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_vline(xintercept = min.cov, linetype="dashed") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+ggsave(paste0(output_dir, "/f0/f0_hc.density.pdf"), cov.plot, width = 10, height=5)
+print(cov.plot)
+head(exome_pc1.hc[order(-exome_pc1.hc$Coverage),])
+```
+
+NB: This distribution looks similar to that for chr21, if anything, the exomes look less exponential with more samples with high coverage. Chr21 also had some samples with very high coverage (>50x).
+
+```{r eval=FALSE, include=FALSE}
+# chr21 coverage density plot 
+ggplot(chr21[chr21$`PCA all chimps   N=728`=='Yes',]) + 
+  geom_density(aes(x=Coverage), col='darkgreen', fill='darkgreen',  alpha=0.3, adjust=0.5) +
+  labs(title="chr21", x ="Mean Coverage Per On-Target Site", y = "Density") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_vline(xintercept = min.cov, linetype="dashed")
+# High coverage samples overlap
+top.n=30
+sum(head(exome[order(-exome$Coverage),]$Sample, top.n) %in% head(chr21[order(-chr21$Coverage),]$Sample, top.n))
+```
+
+#### What are these very high coverage samples?
+Here I pull out the statistics for the unusually high coverage samples to make sure it all looks ok. chr21 also had some high coverage samples.
+
+```{r}
+head(exome_pc1.hc.c[order(-exome_pc1.hc.c$Coverage), c("Sample", "Community", "Coverage", "Human Contamination (%)", "hDNA", "Average Fragment Size", "Method for hDNA quantification", "Num Position  (Human Contamination)")], 10)
+```
+
+I can't see any red flags such as high human contamination.
+
+#### Filter table
+
+```{r}
+filter.table=rbind(filter.table, c("f1", paste0("Coverage > ", min.cov, "x"), nrow(exome_pc1.hc.c), paste0(round(nrow(exome_pc1.hc.c)/(as.numeric(filter.table[1, 'Number of Samples']))*100, digits = 2), "%")))
+write.csv(filter.table, paste0(output_dir, "/f1/f1.filtertable.csv"), row.names=F)
+filter.table
+```
+
+#### Coverage of remaining samples
+
+```{r}
+mean(exome_pc1.hc.c$Coverage)
+median(exome_pc1.hc.c$Coverage)
+```
+
+### Chr21 Outliers
+
+These samples were identified by Claudia and emailed to me 08/03/2021. They were excluded from the chr21 analysis as they were PC1 outliers and are likely contaminated. The list is 100 samples long which is a suspiciously round number but I have confirmed with Claudia it is not truncated.
+
+```{r}
+chr21.pca.outliers=c('Baf2-42','Bat1-3','Bat1-6','Bil1-10','Bil1-20','Bud2-29','Bwi1-55','Bwi1-90','Bwi-2-39','Cam1-18','Cam1-21','Cam1-26','Cam1-44','Cam1-49','Cam1-50','Cam1-71','Cam1-74','Cam1-78','Cam2-77','Cam3-40','Cam3-41','CMNP1-19','CMNP1-43','CNPE1-12','CNPE1-1','CNPE1-26','CNPE1-2','CNPE1-31','CNPE1-36','CNPE1-3','Con2-67','Con2-71','Con3-8','Din1-68','Dja1-17','Dja3-6','Dja3-7','Djo1-50','Fjn1-10','Fjn3-56','Gas2-67','GB-29-06','GB-30-11','GB-37-09','Gbo1-53','Gep1-23','Gep1-65','Gha-01-01','Gou1-40','Itu-01-06','Itu-01-09','Itu-01-10','Itu-01-11','Kab2-1','Kay2-52','Kor2-17','Kor2-1','Kor2-26','Kor2-35','Kor2-5','Lib1-6-D','Loma2-1','Loma2-2','Loma2-7','Mbe-02-04','Mbe-02-05','Mbe-02-07','Mbe-02-09','Mbe-02-12','Mbe-02-13','Mbe1-21','Mbe1-2','Mbe1-9','Mtc1-43','MTC2-40','N173-17','Onp1-26','Onp1-32','Onp1-34','Onp1-35','Rt2-41','Sob1-32','Sob1-47','Tai-E1-42','Tai-E1-50','Tai-E1-52','Tai-E1-54','Tai-E1-55','Tai-E1-56','Tai-E1-58','Tai-E1-60','Tai-E1-7','Tai-E2-18','Tai-E2-48','Tai-E2-51','Tai_R1-23','Tai_R1-26','Tai_R2-16','Tai_R2-22','Tai_R2-9')
+```
+
+```{r}
+nrow(exome_pc1.hc.c[!(exome_pc1.hc.c$Sample %in% chr21.pca.outliers),])
+```
+
+We can see that all the samples identified as PC1 outliers by Claudia are also removed using my filters increasing my confidence that we have removed the worst samples.
+
+```{r}
+# How many chr21 PC1 outliers are there?
+length(chr21.pca.outliers)
+# How chr21 PC1 outliers are also exome PC1 outliers?
+nrow(exome[exome$f0.PC1<(-0.01) & (exome$Sample %in% chr21.pca.outliers),])
+# How many chr21 PC1 outliers are identified as having >1% human contamination?
+nrow(exome[exome$`Human Contamination (%)`>1 & (exome$Sample %in% chr21.pca.outliers),])
+# How many chr21 PC1 outliers have too low coverage?
+nrow(exome[exome$Coverage<=min.cov & (exome$Sample %in% chr21.pca.outliers),]) 
+```
+
+Of the outliers identified with chr21, 94% are also outliers in the exome analysis, 100% are identified as having >1% human contamination and 51% have too low coverage (for 0.5x threshold).
+
+What about the 
+```{r}
+sum(head(exome[order(exome$f0.PC1),],100)$Sample %in% chr21.pca.outliers)
+exome[exome$f0.PC1<(-0.01) & !(exome$Sample %in% chr21.pca.outliers),]
+```
+
+### Write BAM file lists
+
+This BAM file list can be used for input into ngsRelate (analysed in the next script, f2_exome.sample.filtering.Rmd). The related individuals and outliers can then be identified and the final stage of filtering can be done.
+
+#### All
+
+```{r}
+# Ensure it is ordered according to sample name
+exome_pc1.hc.c=exome_pc1.hc.c[order(exome_pc1.hc.c$Sample),]
+# All
+write.table(exome_pc1.hc.c$BAM.mapped.on.target, paste0(output_dir, "/bam.filelists/exome/f1_pc1_hc.1pct_coverage.", min.cov, "x/bam.filelist.all"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+#### Subspecies
+
+```{r}
+# Central
+write.table(exome_pc1.hc.c[exome_pc1.hc.c$Subspecies=="Central",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f1_pc1_hc.1pct_coverage.", min.cov, "x/bam.filelist.c"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Eastern
+write.table(exome_pc1.hc.c[exome_pc1.hc.c$Subspecies=="Eastern",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f1_pc1_hc.1pct_coverage.", min.cov, "x/bam.filelist.e"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Nigeria-Cameroon
+write.table(exome_pc1.hc.c[exome_pc1.hc.c$Subspecies=="Nigeria-Cameroon",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f1_pc1_hc.1pct_coverage.", min.cov, "x/bam.filelist.n"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Western
+write.table(exome_pc1.hc.c[exome_pc1.hc.c$Subspecies=="Western",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f1_pc1_hc.1pct_coverage.", min.cov, "x/bam.filelist.w"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+#### Communities 
+
+I am writing communities (rather than populations) because I think we shouldn't combine them until doing actual population genetic tests as we only lose information and resolution and it isn't necessary. Before then, while we are still filtering the samples and looking at demography it is important to keep them separate.
+
+We need to run ngsRelate per community (population structure messes up the analysis according to Claudia).
+
+```{r}
+coms=unique(exome_pc1.hc.c$Community)
+for(com in coms){
+  exome_pc1.hc.c.com=exome_pc1.hc.c[exome_pc1.hc.c$Community==com, ]
+  write.table(exome_pc1.hc.c.com$BAM.mapped.on.target, paste0(output_dir, "/bam.filelists/exome/f1_pc1_hc.1pct_coverage.", min.cov, "x/bam.filelist.", com),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+}
+```
+
+##### Write list of communities to loop over
+
+This writes the lists of communities as a text file so they can just be copied and pasted into the angsd script so it loops over them like so...
+
+`for POP in c.Bateke c.CampoMaan c.Conkouati...` (this is where you paste the list of communities)
+
+  `   do`
+
+  `   angsd ...`
+
+`done`
+
+Notice I have used the communities column from the unfiltered file, this is just so that I definitely loop over all possible communities (if I change the filters at any point and that changes the communities in the filtered file this wont make a difference). 
+
+```{r}
+com.list=t(unique(exome[order(exome$Community),]$Community))
+write.table(com.list, paste0(output_dir, "/com.list.txt"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+```{bash eval=FALSE}
+scp -r output/bam.filelists/mapped.on.target/f1_pc1_hc.1pct_coverage.*x/ myriad:/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/
+```
+
+ANGSD is then run to produce genotype likelihood files (beagle format for PCAngsd, .glf.gz for ngsRelate) and an allele frequency file (for ngsRelate) to run PCAngsd and ngsRelate.
+
+## Write metadata
+
+```{r}
+write.table(exome_pc1.hc.c, paste0(output_dir, "/f1/f1.metadata.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+```
+
+
+# NEXT- f2_exome.sample.filtering.Rmd
+
+f2_exome.sample.filtering.Rmd analyses ngsRelate output to remove related individuals.

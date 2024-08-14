@@ -1,0 +1,159 @@
+---
+title: "Chr21 Filter based on exomes"
+author: "Harrison Ostridge"
+date: "11/06/2021"
+output: html_document
+---
+
+In order to develop appropriate null models we were thinking we should use chr21 rather than exome data as the exome will be under considerable selection. Aida thinks we would have to use chr21 data from the same samples as the exomes, however, there is an issue in that different samples pass filtering for the different datasets. Here I check if the stats for the chr21 data are acceptable for the exome samples which pass filtering.
+
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/sample_filtering/chr21/') 
+min.cov=0.5
+```
+
+#### Library
+```{r library, message=FALSE, warning=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(readxl)
+
+pop_structure_dir="../../population_structure/exome/output/"
+meta_data_dir="../meta.data/"
+output_dir="output/"
+```
+
+#### Read in data
+
+Claudia sent me this metadata file on 08/03/2021. I have saved it as read only to prevent accidental changes (exterbal to R scripts).
+
+The data is always ordered according to sample name. It is very important to maintain the correct order in order to match ANGSD outputs with samples. I always make sure it is in the correct order before writing any outputs. Note that the ordering can be different between R and bash, I always stick to the R ordering.
+
+```{r}
+# Exomes
+f5_exome=read.csv(paste0(pop_structure_dir, "/f5.metadata.with.populations.csv"))
+## Order by sample
+f5_exome=f5_exome[order(f5_exome$Sample),]
+
+# chr21 (for comparison), sent by Claudia on 04/11/2021
+chr21=read_excel(paste0(meta_data_dir, "/TableS1_forAida.xlsx"))
+chr21=chr21[order(chr21$Sample),]
+```
+
+### Select chr21 samples by exome f5
+
+```{r}
+f5_chr21=chr21[chr21$Sample %in% f5_exome$Sample,]
+```
+
+## Human contamination
+
+```{r}
+hc.threshold=1
+ggplot(f5_chr21) + 
+  theme_minimal()+ 
+  geom_density(aes(x=`Human Contamination from Chr21`), col='black', fill='black',  alpha=0.3, adjust=0.5) +
+  labs(title="Human Contamination Density", x ="% Human Contamination", y = "Density") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_vline(xintercept = hc.threshold, linetype="dashed") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+f5_chr21[f5_chr21$`Human Contamination from Chr21`>hc.threshold,c("Sample", "Site", "Coverage", "Human Contamination from Chr21")]
+f5_chr21[f5_chr21$`Human Contamination from Chr21`>hc.threshold,]
+```
+
+This one sample needs to be removed as human contamination is unacceptably high. This reduces the sample size of Conkouati from 9 to 8 which isn't ideal but it is still just at the sample size threshold we require for populations (8).
+
+### Remove sample
+
+The resulting list of samples I call f6 as it is a subset of f5. f6 contains all samples which passed exome filtering (f5) (415 individuals) minus one individual with high human contamination for chr21 (414 individuals).
+
+```{r}
+f6_chr21=f5_chr21[f5_chr21$`Human Contamination from Chr21`<1,]
+f6_exome=f5_exome[f5_exome$Sample %in% f6_chr21$Sample,]
+```
+
+## Coverage
+
+```{r}
+min.cov=0.5
+
+ggplot(f6_chr21) + 
+  theme_minimal()+ 
+  geom_density(aes(x=Coverage), col='black', fill='black',  alpha=0.3, adjust=0.5) +
+  labs(title="Mean Coverage Density, PC1 outliers and Human Contamination >1% Removed", x ="Mean Coverage Per On-Target Site", y = "Density") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_vline(xintercept = min.cov, linetype="dashed") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r}
+f6_chr21[f6_chr21$Coverage<min.cov,c("Sample", "Coverage", "Human Contamination from Chr21")]
+```
+
+## Summary
+
+I think that the stats look fine. The only potential issue is the single sample with human contamination of ~3%
+
+I think the next stage to to run a PCA to check it all looks ok and if it does then I think it is fine to use the exome filtering on chr21.
+
+```{r}
+f6_exome$chr21.BAM=paste0('/home/ucfajos/Scratch/data/phase1and2_chr21/BAM/', f6_exome$Sample, '.addRG.bam')
+```
+
+```{r}
+write.table(f6_exome, paste0(output_dir, "/f6/f6.metadata.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+write.table(f6_chr21, paste0(output_dir, "/f6/f6.chr21.metadata.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+```
+
+### Write BAM file lists
+
+I am using the exome metadata file to write the bam file lists just because I have reassigned the sample swaps and defined populations already here.
+
+#### All
+
+```{r}
+# Ensure it is ordered according to sample name
+f6_exome=f6_exome[order(f6_exome$Sample),]
+# All
+write.table(f6_exome$chr21.BAM,
+            paste0(output_dir, "/bam.filelists/f6/bam.filelist.all"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+#### Subspecies
+
+```{r}
+# Central
+write.table(f6_exome[f6_exome$Subspecies=="Central",]$chr21.BAM, 
+            paste0(output_dir, "/bam.filelists/f6/bam.filelist.c"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Eastern
+write.table(f6_exome[f6_exome$Subspecies=="Eastern",]$chr21.BAM, 
+            paste0(output_dir, "/bam.filelists/f6/bam.filelist.e"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Nigeria-Cameroon
+write.table(f6_exome[f6_exome$Subspecies=="Nigeria-Cameroon",]$chr21.BAM, 
+            paste0(output_dir, "/bam.filelists/f6/bam.filelist.n"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Western
+write.table(f6_exome[f6_exome$Subspecies=="Western",]$chr21.BAM, 
+            paste0(output_dir, "/bam.filelists/f6/bam.filelist.w"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+
+```{bash eval=FALSE}
+scp -r output/bam.filelists/f6 myriad:/home/ucfajos/analysis/phase1and2_chr21_analysis/angsd/bam.filelists/
+```
+
+

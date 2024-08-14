@@ -1,0 +1,469 @@
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_aux/')
+```
+
+#### Parameters
+
+```{r}
+subsps='ce'
+env_data='f_over_sum_known_trees'
+habitat_col=c("f_over_sum_known_trees"='black', "f_over_sum_known_trees.rm_e.IssaValley"="purple")
+#fprs=c(0.005, 0.001, 0.0005, 0.0001, 0.00005)
+fprs=c(0.005, 0.001, 0.0005)
+chr21=TRUE
+flanks=1000
+```
+
+---
+title: "BayPass AUX: Central-Eastern"
+subtitle: "Investigating the Effect of Issa Valley"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Issa Valley is a large outlier for forest-tree-percentage in the Central-Eastern dataset. Here I investigate how much it effects the results by removing it, running BayPass and comparing the results with the original analysis.
+
+#### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(dplyr)
+library(ggplot2)
+library(ggVennDiagram)
+library(psych)
+library(tidyverse)
+library(cowplot)
+library(reshape)
+library(ggpattern)
+# Call scripts containing custom functions 
+source("../scripts/baypass_tools.R")
+source("../baypass_core/scripts/candidate_allele_frequency_patterns.R")
+source("scripts/baypass_aux_tools.R")   
+
+env_dir="../../../environmental_data/output/"
+formatted_core_out_dir="../baypass_core/output/formatted_baypass_core_output/"
+formatted_aux_out_dir="output/formatted_baypass_aux_output/"
+formatted_aux_out_fprs_dir="output/baypass_aux_output_with_fprs/"
+exome_allele_freq_dir="../../../allele_frequencies/exome/output/"
+chr21_allele_freq_dir="../../../allele_frequencies/chr21/output/"
+exome_aux_out="../../running_baypass/exome/output/"
+chr21_aux_out="../../running_baypass/chr21/output/"
+```
+
+#### Read in data
+
+```{r echo=FALSE}
+## Environmental data file
+env_file=read.csv(paste0(env_dir, "/meta_data.env.pops.imputed.csv"))
+### Make a version with a single row per population for plotting (average latitudes and longitudes across communities in a population are used)
+env_file.pops=unique(env_file[,c("Population", "Latitude", "Longitude")])
+env_file.pops=aggregate(env_file.pops[, c("Latitude", "Longitude")], list(env_file.pops$Population), mean)
+colnames(env_file.pops)=c("Population", "Latitude", "Longitude")
+
+# Subspecies specific files
+ann=list()
+betai=list()
+allele.freq=list()
+Pdelta=list() #
+cov.in=list()
+subsp.col=list()
+coverage=list()
+random_reps=list()
+## chr21
+betai_chr21=list()
+Pdelta_chr21=list()
+
+for(subsp in subsps){
+  cat("-", subsp, "\n")
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  ## Allele frequencies
+  allele.freq[[subsp]]=fread(paste0(formatted_core_out_dir, "/f5", subsp.file,
+          ".pops_missing.pops.", miss.pop,"_minMAC2_summary_pij.out_pop.info"))
+  ### Population names
+  pops=unique(allele.freq[[subsp]]$Population)
+  pops=pops[order(pops)]
+  #### Population colours (according to subspecies)
+  subsp.col[[subsp]]=c()
+  for(pop in pops){
+    if(startsWith(pop, "c.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "green3")}
+    if(startsWith(pop, "e.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "darkorange")}
+    if(startsWith(pop, "n.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "red")}
+    if(startsWith(pop, "w.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "blue")}
+  }
+  ## Read BayPass AUX output
+  ### Annotation
+  ann[[subsp]]=fread(paste0(formatted_core_out_dir, "/f5",
+                            subsp.file,".pops_missing.pops.", miss.pop,"_minMAC2_summary_pi_xtx.out_row.per.gtf.annot_5000bp.flanks"),
+                     select=c('chr', 'pos', 'gene'))
+  ann[[subsp]][ann[[subsp]]$gene=='.','gene']=NA
+  ### Not annotated Betai
+  betai[[subsp]]=fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, "_summary_betai.out_all_runs.gz"))
+  betai[[subsp]]$chr_pos=paste(betai[[subsp]]$chr, betai[[subsp]]$pos, sep="_")
+  ### Pdelta file
+  Pdelta[[subsp]]=fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, "_summary_Pdelta.out_all_runs"))
+  covs=unique(Pdelta[[subsp]]$COVARIABLE_name)
+  ## Read in covariable input files - real values and random ones
+  ### Get the number of random reps from column headers
+  random_reps[[subsp]]=colnames(betai[[subsp]])[grepl("RANDOM", colnames(betai[[subsp]]))]
+  random_reps[[subsp]]=as.numeric(unique(gsub(".*RANDOM_rep", "", random_reps[[subsp]])))
+  if(chr21){reps='Real'}else{reps=c('Real', random_reps[[subsp]])}
+  for(rep in reps){
+    if(rep=='Real'){rep.name=''}
+    if(rep %in% random_reps[[subsp]]){rep.name=paste0("_Random_rep", rep)}
+    cov.in[[subsp]][[rep]]=fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, rep.name, "_covariate.std"))
+
+    ### Add covariable names as row names (alphabetical order)
+    #names(habitat_col)=covs[order(covs)]
+    rownames(cov.in[[subsp]][[rep]])=covs[order(covs)]
+    ### Add population names as column names (alphabetical order)
+    colnames(cov.in[[subsp]][[rep]])=pops
+  }
+  # chr21
+  if(chr21){
+    cat("Read chr21\n")
+    ### Betai file
+    betai_chr21[[subsp]]=fread(paste0(formatted_aux_out_dir, "/chr21.f7",
+                           subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2.non-genic_",flanks,"bp.flanks_", env_data, "_summary_betai.out_all_runs.gz"))
+    betai_chr21[[subsp]]$chr_pos=paste(betai_chr21[[subsp]]$chr, betai_chr21[[subsp]]$pos, sep="_")
+    ### Pdelta file
+    Pdelta_chr21[[subsp]]=fread(paste0(formatted_aux_out_dir, "/chr21.f7",
+                           subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2.non-genic_",flanks,"bp.flanks_", env_data, "_summary_Pdelta.out_all_runs"))
+  }
+}
+```
+
+## rm Issa Valley
+
+```{r}
+# Coverage
+cov=list()
+cov[['exome']]=fread(paste0(exome_allele_freq_dir, "/f5.ce.pops_minInd.6or50pct_missing.pops.0.3/f5.ce.pops.all.chrs_missing.pops.0.3_minMAC2_coverage"))
+cov[['chr21']]=fread(paste0(chr21_allele_freq_dir, "/chr21.f7.ce.pops_minInd.6or50pct_missing.pops.0.3/chr21.f7.ce.pops_chr21_missing.pops.0.3_pop_minMAC2_coverage"))
+for(data in names(cov)){
+  cov[[data]]=cov[[data]][colnames(cov[[data]])!="e_IssaValley_coverage",]
+  rownames(cov[[data]])=paste(gsub("^chr", "", cov[[data]]$chr), cov[[data]]$pos, sep="_")
+  cov[[data]]=as.data.frame(rowSums(cov[[data]][grepl("_coverage$", colnames(cov[[data]]))], na.rm = T))
+  colnames(cov[[data]])="coverage"
+}
+
+# Exome
+betai.rm_IV=NULL
+for(seed in c('', '_seed.100', '_seed.10k')){
+  betai.tmp=fread(paste0(exome_aux_out, "/f5.ce.pops_minInd.6or50pct_missing.pops.0.3_minMAC2.rm_e.IssaValley/auxi/f_over_sum_known_trees.rm_e.IssaValley/f5.ce.pops_missing.pops.0.3_minMAC2_", env_data, ".rm_e.IssaValley",seed,"_summary_betai.out"), select=c('MRK', 'M_Beta', 'BF(dB)'))
+  if(is.null(betai.rm_IV)){
+    betai.rm_IV=betai.tmp
+  }else{
+    betai.tmp=betai.tmp[c('M_Beta', 'BF(dB)')]
+    if(seed=='_seed.100'){colnames(betai.tmp)=paste0(colnames(betai.tmp), ".r1")}
+    if(seed=='_seed.10k'){colnames(betai.tmp)=paste0(colnames(betai.tmp), ".r2")}
+    betai.rm_IV=cbind(betai.rm_IV, betai.tmp)
+  }
+}
+## Get medians
+betai.rm_IV$`M_Beta.median`=apply(betai.rm_IV[c('M_Beta', 'M_Beta.r1', 'M_Beta.r2')], 1, median, na.rm=T)
+betai.rm_IV$`BF(dB).median`=apply(betai.rm_IV[c('BF(dB)', 'BF(dB).r1', 'BF(dB).r2')], 1, median, na.rm=T)
+
+betai.rm_IV=merge(betai[[subsp]][c('MRK', 'chr', 'pos')], betai.rm_IV)
+betai.rm_IV$chr_pos=paste(betai.rm_IV$chr, betai.rm_IV$pos, sep="_")
+betai.rm_IV=merge(betai.rm_IV, cov[['exome']], by.x='chr_pos', by.y=0)
+betai.rm_IV$COVARIABLE_name=paste0(env_data,'.rm_e.IssaValley')
+betai[[subsp]]=rbind(betai[[subsp]][colnames(betai.rm_IV)], betai.rm_IV)
+
+colnames(betai.rm_IV)[!colnames(betai.rm_IV) %in% colnames(betai[[subsp]])]
+
+# Chr21
+betai_chr21.rm_IV=NULL
+for(seed in c('', '_seed.100', '_seed.10k')){
+  betai_chr21.tmp=fread(paste0(chr21_aux_out, "/chr21.f7.ce.pops_minInd.6or50pct_missing.pops.0.3_minMAC2.non-genic_1000bp.flanks.rm_e.IssaValley/auxi/", env_data, ".rm_e.IssaValley/chr21.f7.ce.pops_missing.pops.0.3_minMAC2.non-genic_1000bp.flanks.", env_data, ".rm_e.IssaValley",seed,"_summary_betai.out"), select=c('MRK', 'M_Beta', 'BF(dB)'))
+  if(is.null(betai_chr21.rm_IV)){
+    betai_chr21.rm_IV=betai_chr21.tmp
+  }else{
+    betai_chr21.tmp=betai_chr21.tmp[c('M_Beta', 'BF(dB)')]
+    if(seed=='_seed.100'){colnames(betai_chr21.tmp)=paste0(colnames(betai_chr21.tmp), ".r1")}
+    if(seed=='_seed.10k'){colnames(betai_chr21.tmp)=paste0(colnames(betai_chr21.tmp), ".r2")}
+    betai_chr21.rm_IV=cbind(betai_chr21.rm_IV, betai_chr21.tmp)
+  }
+}
+## Get medians
+betai_chr21.rm_IV$`M_Beta.median`=apply(betai_chr21.rm_IV[c('M_Beta', 'M_Beta.r1', 'M_Beta.r2')], 1, median, na.rm=T)
+betai_chr21.rm_IV$`BF(dB).median`=apply(betai_chr21.rm_IV[c('BF(dB)', 'BF(dB).r1', 'BF(dB).r2')], 1, median, na.rm=T)
+
+betai_chr21.rm_IV=merge(betai_chr21[[subsp]][c('MRK', 'chr', 'pos')], betai_chr21.rm_IV)
+betai_chr21.rm_IV$chr_pos=paste(betai_chr21.rm_IV$chr, betai_chr21.rm_IV$pos, sep="_")
+betai_chr21.rm_IV=merge(betai_chr21.rm_IV, cov[['chr21']], by.x='chr_pos', by.y=0)
+betai_chr21.rm_IV$COVARIABLE_name=paste0(env_data,'.rm_e.IssaValley')
+betai_chr21[[subsp]]=rbind(betai_chr21[[subsp]][colnames(betai_chr21.rm_IV)], betai_chr21.rm_IV)
+
+cov.in.tmp=cov.in[[subsp]][['Real']]
+rownames(cov.in.tmp)=paste0(env_data,'.rm_e.IssaValley')
+cov.in[[subsp]][['Real']]=rbind(cov.in[[subsp]][['Real']], cov.in.tmp)
+```
+
+## Volcano Plot
+
+```{r echo=FALSE, fig.align='center'}
+for(subsp in subsps){
+  cat(subsp, "\n")
+  # Plot volcano plot
+  aux_volcano.v2(betai[[subsp]], x='M_Beta.median', y='`BF(dB).median`', colour_col='COVARIABLE_name', colours=habitat_col)
+  #aux_volcano.v2(betai[[subsp]], x='M_Beta', y='`BF(dB)`', colour_col='COVARIABLE_name', colours=habitat_col)
+  #aux_volcano.v2(betai[[subsp]], x='M_Beta.r1', y='`BF(dB).r1`', colour_col='COVARIABLE_name', colours=habitat_col)
+  #aux_volcano.v2(betai[[subsp]], x='M_Beta.r2', y='`BF(dB).r2`', colour_col='COVARIABLE_name', colours=habitat_col)
+}
+```
+
+```{r echo=FALSE, fig.align='center'}
+for(subsp in subsps){
+  cat(subsp, "\n")
+  # Plot volcano plot
+  aux_volcano.v2(betai_chr21[[subsp]], x='M_Beta.median', y='`BF(dB).median`', colour_col='COVARIABLE_name', colours=habitat_col)
+}
+```
+
+I think this is exactly what we expect to see if there is no (or very little selection) in non-genic chr21 i.e. basically no difference in the distributions for non-genic-chr21 (as there should be not selection in either) - the small shift to lower BFs in rm Issa Valley due to the small number of non-coding SNPs under selection. The massive shift to lower values in the exome is due to the vast reduction in signatures of selection associated with habitat type now that we have no savannah-like population.
+
+## Null vs real data
+
+```{r echo=FALSE, out.width="50%"}
+if(chr21){
+  cat("Null is chr21\n")
+  plot_betai_stats.v2(betai, betai_chr21, cols=habitat_col)
+}else{
+  cat("Null is generated from random shuffling of environmental variables\n")
+  plot_betai_stats.v2(betai, null=betai.rand.total, cols=habitat_col)
+}
+```
+
+# Select candidates
+
+## Calculate FPR per coverage bin
+
+We found that candidates were more likely to have lower coverages than expected from the background. We therefore decided to scalculate FPRs within candidate bins to account for this.
+
+FPRs are estimated using a null distribution. SNPs in the null distribution are assigned empirical p values (BF rank/total number of SNPs). The null data is then combined with the exome data and ordered by BF. The FPR for each of the exome SNP is given as the smallest empirical p value of any null SNP with a lower or equal BF.
+
+##### Example (winthin a single coverage bin): 
+
+```
+Null BFs:   0   1   1   4   8
+  Ranks:    5   4   4   2   1
+  p:        1   0.8 0.8 0.4 0.2
+  
+Exome BFs:  0   2   3   9   10
+  FDR:      1   0.8 0.8 0.2 0.2
+```
+  
+We can see that in tied instances we use the lowest rank and that the minimum FPR possible is determined by the number of null SNPs.
+
+This is done for each coverage bin.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Assign FPRs
+over_write=F
+betai_fpr=list()
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  if(chr21){
+    cat("Null is chr21\n")
+    suffix=paste0(".non-genic_",flanks,"bp.flanks")
+    null=betai_chr21[subsp]
+  }else{
+    cat("Null is generated from random shuffling of environmental variables\n")
+    suffix="-cov_cor"
+    null=betai.rand.total[subsp]
+  }
+  file=paste0(formatted_aux_out_fprs_dir, "/f5", subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2.rm_e.IssaValley_", 
+                       env_data, "_summary_betai.out_all_runs.fpr", suffix)
+  if(file.exists(file) & over_write==FALSE){
+    betai_fpr[[subsp]]=fread(file)
+  }else{
+    cat("file does not exist")
+    # Note that this function requires lists of data frames as inputs and outputs
+    out=assign_fpr(betai=betai[subsp], null=null, n_bins=5, tail_bin_size=0.1)
+    # Write FPR data
+    write.table(out[[subsp]], file, row.names=F, sep="\t")
+    betai_fpr[[subsp]]=out[[subsp]]
+  }
+}
+
+betai[[subsp]][is.na(betai[[subsp]]$coverage),]
+null[[subsp]][is.na(null[[subsp]]$coverage),]
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", eval=FALSE}
+# Plot
+plot_fpr_stats(betai_fpr, null=betai_chr21, fprs=fprs, top.cov=0.025)
+```
+
+```{r fig.height=4, fig.width=2.5, message=FALSE, warning=FALSE, echo=FALSE}
+pos_and_neg=TRUE
+for(cov in unique(betai_fpr[[subsp]]$COVARIABLE_name)){
+  betai_tmp=list()
+  betai_chr21_tmp=list()
+  for(subsp in names(betai_fpr)){
+    betai_tmp[[subsp]]=betai_fpr[[subsp]][betai_fpr[[subsp]]$COVARIABLE_name==cov,]
+    betai_chr21_tmp[[subsp]]=betai_chr21[[subsp]][betai_chr21[[subsp]]$COVARIABLE_name==cov,]
+  }
+  if(cov=="f_over_sum_known_trees.rm_e.IssaValley"){
+    title="Issa Valley removed"
+  }else{
+    title=cov
+  }
+  fdr.df.aux=plot_fpr_stats_main.v4(betai_tmp, betai_chr21_tmp, fprs=fprs, thresh_stat='BF(dB).median', title=title, subtitle=" ")
+  
+  if(pos_and_neg){
+    f.list=list()
+    s.list=list()
+    r.list=list()
+    for(subsp in subsps){
+      f.list[['exome']][[subsp]]=betai_tmp[[subsp]][betai_tmp[[subsp]]$M_Beta.median>0,]
+      s.list[['exome']][[subsp]]=betai_tmp[[subsp]][betai_tmp[[subsp]]$M_Beta.median<0,]
+      #r.list[['exome']][[subsp]]=betai_tmp[[subsp]][sample(nrow(betai_tmp[[subsp]]), betai_tmp[[subsp]]/2),]
+      
+      f.list[['chr21']][[subsp]]=betai_chr21_tmp[[subsp]][betai_chr21_tmp[[subsp]]$M_Beta.median>0,]
+      s.list[['chr21']][[subsp]]=betai_chr21_tmp[[subsp]][betai_chr21_tmp[[subsp]]$M_Beta.median<0,]
+      n=nrow(betai_chr21_tmp[[subsp]])
+      r.list[['chr21']][[subsp]]=betai_chr21_tmp[[subsp]][sample(n, n/2),]
+    }
+    # Expectation from n umber of sites with positive or negative beta
+    cat("forest\n")
+    tmp=plot_fpr_stats_main.v4(f.list[['exome']], f.list[['chr21']], fprs=fprs, thresh_stat='BF(dB).median', title=title, subtitle="Forest")
+    cat("savannah\n")
+    tmp=plot_fpr_stats_main.v4(s.list[['exome']], s.list[['chr21']], fprs=fprs, thresh_stat='BF(dB).median', title=title, subtitle="Savannah")
+    # 
+    #cat("forest\n")
+    #tmp=plot_fpr_stats_main.v4(f.list[['exome']], r.list[['chr21']], fprs=fprs, thresh_stat='BF(dB).median')
+    #cat("savannah\n")
+    #tmp=plot_fpr_stats_main.v4(s.list[['exome']], r.list[['chr21']], fprs=fprs, thresh_stat='BF(dB).median')
+  }
+}
+```
+
+## Candidate volcano plots
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%"}
+for(subsp in subsps){
+  for(fpr in fprs){
+    aux_volcano.v2(betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<=fpr,], 
+                   x='M_Beta.median', y='`BF(dB).median`', colour_col='COVARIABLE_name', colours=habitat_col)
+  }
+}
+```
+
+# Candidate Overlap
+
+```{r echo=FALSE, out.width="33%"}
+# Add gene annotations
+betai_fpr_ann=list()
+for(subsp in subsps){
+  betai_fpr_ann[[subsp]]=merge(betai_fpr[[subsp]], ann[[subsp]], by=c('chr', 'pos'))
+}
+candidate_overlap.v3(betai_fpr_ann)
+```
+
+# Distribution of candidates from full analysis in rm Issa Valley
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%", fig.width=5, fig.height=3}
+alpha=0.1
+lw=0.5
+for(subsp in subsps){
+  betai_fpr[[subsp]]$chr_pos=paste(betai_fpr[[subsp]]$chr, betai_fpr[[subsp]]$pos, sep="_")
+  bg=betai_fpr[[subsp]][betai_fpr[[subsp]]$COVARIABLE_name==paste0(env_data, ".rm_e.IssaValley"),]
+  cands_df=list()
+  bg.tmp=bg
+  for(dir in c('All Candidate SNPs', 'Savannah Candidate SNPs', 'Forest Candidate SNPs')){
+    if(dir=="All Candidate SNPs"){
+      betai_fpr.tmp=betai_fpr[[subsp]]
+    }
+    if(dir=="Savannah Candidate SNPs"){
+      betai_fpr.tmp=betai_fpr[[subsp]][betai_fpr[[subsp]]$M_Beta.median < 0,]
+      #bg.tmp=bg[bg$M_Beta.median <0, ]
+    }
+    if(dir=="Forest Candidate SNPs"){
+      betai_fpr.tmp=betai_fpr[[subsp]][betai_fpr[[subsp]]$M_Beta.median > 0,]
+      #bg.tmp=bg[bg$M_Beta.median >0, ]
+    }
+    for(fpr in c(0.005, 0.001, 0.0005)){
+      cands=betai_fpr.tmp[betai_fpr.tmp$COVARIABLE_name==env_data & betai_fpr.tmp$fpr<fpr, 'chr_pos']
+      cands_df[[paste0(100*fpr, "%")]]=betai_fpr.tmp[betai_fpr.tmp$COVARIABLE_name==paste0(env_data, ".rm_e.IssaValley") & betai_fpr.tmp$chr_pos %in% cands,]
+    }
+    for(stat in c('fpr', '`BF(dB).median`')){
+      if(stat=='fpr'){
+        binwidth=0.025
+        stat_name="FPR"
+      }
+      if(stat=='`BF(dB).median`'){
+        binwidth=2
+        stat_name="BF (dB)"
+      }
+      plot=ggplot(NULL) +
+        theme_bw() +
+            theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5)) +
+        labs(title=dir, subtitle="GEA Results from Excluding Issa Valley", x=stat_name, y="Desnity") +
+        stat_bin(data=bg.tmp, aes_string(x=stat, y='..density..', col='"All sites"', fill='"All sites"'), alpha=1, binwidth=binwidth, geom="step", size=lw,
+                     position=position_nudge(x=-0.5*binwidth)) +
+        geom_histogram(data=bg.tmp, aes_string(x=stat, y='..density..', fill='"All sites"'), alpha=alpha, binwidth=binwidth, size=0)
+        for(fpr in names(cands_df)){
+          col=paste0('"Full analysis, FPR<', fpr, '"')
+          plot=plot+
+            stat_bin(data=cands_df[[fpr]], aes_string(x=stat, y='..density..', col=col, fill=col), 
+                     alpha=1, binwidth=binwidth, geom="step", size=lw, position=position_nudge(x=-0.5*binwidth)) +
+            geom_histogram(data=cands_df[[fpr]], aes_string(x=stat, y='..density..', fill=col), alpha=alpha, binwidth=binwidth, size=0) 
+        }
+      print(plot + 
+              scale_discrete_manual("", values = c("black", 'darkorange', 'red', "purple"), aesthetics = c("colour", "fill")))
+    }
+  }
+}
+```
+
+# Allele frequencies
+
+## Real env
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+run_env_vs_AF.v4(betai_fpr, cov.in, allele.freq, stats=c("M_P", "M_Pstd"), fprs=fprs)
+```
+
+## Rank env
+
+Here I plot the rank order of the environmental variables instead of the real values.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+betai_fpr.rank=list()
+cov.in.rank=list()
+for(subsp in subsps){
+  rows=list()
+  for(i in 1:nrow(cov.in[[subsp]][['Real']])){
+    rows[[i]]=data.frame(t(rank(cov.in[[subsp]][['Real']][i,])))
+  }
+  cov.in.rank[[subsp]][['Real']]=do.call("rbind", rows)
+  rownames(cov.in.rank[[subsp]][['Real']])=paste0(rownames(cov.in[[subsp]][['Real']]), "_rank")
+  betai_fpr.rank[[subsp]]=betai_fpr[[subsp]]
+  betai_fpr.rank[[subsp]]$COVARIABLE_name=paste0(betai_fpr.rank[[subsp]]$COVARIABLE_name, "_rank")
+}
+run_env_vs_AF.v4(betai_fpr.rank, cov.in.rank, allele.freq, stats=c("M_P", "M_Pstd"), fprs=fprs)
+```
+
+### Ignore Issa Valley
+
+Issa Valley is a forest tree % outlier, here I make a plot the results from the full analysis by just removed Issa Valley from the figure to see if we still see a correlation.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+allele.freq.tmp=list()
+cov.in.tmp=list()
+allele.freq.tmp[['ce']]=allele.freq[['ce']][allele.freq[['ce']]$Population!='e.IssaValley',]
+cov.in.tmp[['ce']][['Real']]=cov.in[['ce']][['Real']][colnames(cov.in[['ce']][['Real']])!='e.IssaValley']
+
+run_env_vs_AF.v4(betai_fpr['ce'], cov.in.tmp, allele.freq.tmp, stats=c("M_P", "M_Pstd"), fprs=fprs)
+```

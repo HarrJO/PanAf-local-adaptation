@@ -1,0 +1,232 @@
+---
+title: "Chr21 Population Structure"
+author: "Harrison Ostridge"
+date: "16/06/2021"
+output: html_document
+---
+
+The purpose of this script is to plot PCAs from the f7 filtered chr21 data to investigate population structure in chr21 samples. I want to verify that they agree with previous studies and the exomes.
+
+#### Setup
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/population_structure/') 
+```
+
+#### Library
+```{r library, message=FALSE, warning=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(readxl)
+library(plyr)
+library(tidyr)
+library(stringr)
+library(igraph)
+library(RColorBrewer)
+library(grid) 
+library(gridExtra)
+library(fields)
+library(maps)
+library(mapdata)
+library(mapplots)
+library(RColorBrewer)
+library(MCMCpack)
+
+filtering_dir="../sample_filtering/chr21/output/"
+pcangsd_output_dir="../pcangsd/chr21/output/"
+```
+
+#### Read in data
+
+```{r}
+# Read in metadata
+f7_chr21=read.csv(paste0(filtering_dir, "/f7/f7.chr21.metadata.csv"), check.names = FALSE)
+f7_exome=read.csv(paste0(filtering_dir, "/f7/f7.metadata.csv"), check.names = FALSE)
+## Ensure it is in the correct order
+f7_chr21=f7_chr21[order(f7_chr21$Sample),]
+f7_exome=f7_exome[order(f7_exome$Sample),]
+```
+
+## Population Structure
+
+### PCAngsd
+
+```{r}
+plot.PCA=function(subsps, meta.data, input.dir, output.file=NULL, label=NULL, return.df=FALSE){
+  # Create list to store result data frames in
+  results=list()
+  # BAM file lists are always given in alphabetical order (with respect to sample name) so it is important to ensure the samples are in this order
+  meta.data=meta.data[order(meta.data$Sample),]
+  # Add label column, if no column is provided a blank label column is used
+  meta.data$label=''
+  if(!is.null(label)){meta.data$label=meta.data[[label]]}
+  # Loop over each subspecies provided
+  for(subsp in subsps){
+    title=""
+    meta.data.subsp=meta.data
+    # Subspecies options
+    if(subsp=="c"){title="Central"}
+    if(subsp=="e"){title="Eastern"}
+    if(subsp=="n"){title="Nigeria-Cameroon"}
+    if(subsp=="w"){title="Western"}
+    if(subsp=="all"){title="All Samples"
+      # Group defines how to draw polygons
+      group="Subspecies"
+      input=paste0(input.dir,"chr21.f7.", subsp,".cov")}
+    if(subsp != "all"){
+      # Group defines how to draw polygons
+      group="Site"
+      input=paste0(input.dir, subsp,"/chr21.f7.", subsp,".cov")
+      if(title!=""){meta.data.subsp=meta.data[meta.data$Subspecies==title,]}}
+    # Read in PCAngsd output
+    cov=read.table(input)
+    pcs=eigen(cov)
+    # Select columns corresponding to PC1 and PC2
+    pc1.pc2=as.data.frame(pcs$vectors[,1:2])
+    colnames(pc1.pc2)=c("f7.PC1", "f7.PC2")
+    # Add PC1 and PC2 columns to metadata
+    ## The order of samples in PCAngsd output should be alphabetical as the BAM file lists were written in this order
+    pc1.pc2=cbind(meta.data.subsp, pc1.pc2)
+    # Percentage variance explained by PCs
+    PC1.percent=pcs$values[1]/sum(pcs$values)*100
+    PC2.percent=pcs$values[2]/sum(pcs$values)*100
+    # Plot
+    PC1.lab=paste("PC1 (", round(PC1.percent,digits = 2),"%)")
+    PC2.lab=paste("PC2 (", round(PC2.percent,digits = 2),"%)")
+    find_hull=function(pc1.pc2) pc1.pc2[chull(pc1.pc2[,'f7.PC1'], pc1.pc2[,'f7.PC2']), ]
+    hulls=ddply(pc1.pc2, group, find_hull)
+    # Plot all samples
+    if(subsp=="all"){
+      plot=ggplot(pc1.pc2, aes(x=f7.PC1, y=f7.PC2, fill=Subspecies, colour=Subspecies, label = label)) +
+        theme_minimal()+ 
+        geom_point(aes(shape=Subspecies), size = 2) + 
+        geom_text_repel(size = 3, min.segment.length = unit(0.1, "lines"), show.legend = FALSE) +
+        geom_polygon(data = hulls, alpha = 0.5) + 
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+        guides(fill=guide_legend(ncol=1)) + 
+        labs(x=paste(PC1.lab), y=paste(PC2.lab)) + 
+        ggtitle(title) +
+        scale_fill_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+        scale_color_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+        scale_shape_manual(values=0:4)
+    }
+    # Plot individual subspecies
+    else{
+      plot=ggplot(pc1.pc2, aes(x=f7.PC1, y=f7.PC2, fill=Site, colour=Site, label = label)) +
+        theme_minimal()+ 
+        geom_point(aes(shape=Site), size = 2) + 
+        geom_text_repel(size = 3, min.segment.length = unit(0.1, "lines"), show.legend = FALSE) +
+        geom_polygon(data = hulls, alpha = 0.5) + 
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+        guides(fill=guide_legend(ncol=1), shape=guide_legend(ncol=1)) + 
+        labs(x=paste(PC1.lab), y=paste(PC2.lab)) + 
+        ggtitle(title) +
+        scale_shape_manual(values=rep(0:6, 10))
+    }
+    # If an output file is provided, write to it
+    if(!is.null(output.file)){ggsave(paste0(output.file), plot=plot)}
+    # Display plot
+    print(plot)
+    # Save metadata with PC1 and PC2 columns added for the subspecies in results list
+    results[[subsp]]=pc1.pc2
+  }
+  # If return.df is set to TRUE, return the results list
+  if(return.df==T){return(results)}
+}
+```
+
+```{r message=FALSE, warning=FALSE, out.width="50%"}
+plot.PCA("all", 
+         f7_exome,
+         paste0(pcangsd_output_dir, "/chr21.f7.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"))
+```
+
+
+```{r  message=FALSE, warning=FALSE, out.width="50%"}
+plot.PCA(c("c", "e", "n", "w"), 
+         f7_exome,
+         paste0(pcangsd_output_dir, "/chr21.f7.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"))
+```
+
+### Easetrn PCA looks rather different in chr21 compared to exomes - somthing to bear in mind 
+
+- This chr21 one looks more like the one in Claudia's paper than the exome one unsurprisingly 
+
+## Procrustes transformation
+
+```{r out.width="50%"}
+plot.PCA.map=function(subsps, meta.data, input.dir, output.file=NULL, label=NULL, return.df=FALSE){
+  # Create list to store result data frames in
+  results=list()
+  # BAM file lists are always given in alphabetical order (with respect to sample name) so it is important to ensure the samples are in this order
+  meta.data=meta.data[order(meta.data$Sample),]
+  # Loop over each subspecies provided
+  for(subsp in subsps){
+    title=""
+    meta.data.subsp=meta.data
+    # Subspecies options
+    if(subsp=="c"){title="Central"}
+    if(subsp=="e"){title="Eastern"}
+    if(subsp=="n"){title="Nigeria-Cameroon"}
+    if(subsp=="w"){title="Western"}
+    if(subsp=="all"){title="All Samples"
+      # Group defines how to draw polygons
+      group="Subspecies"
+      input=paste0(input.dir,"chr21.f7.", subsp,".cov")}
+    if(subsp != "all"){
+      # Group defines how to draw polygons
+      group="Community"
+      input=paste0(input.dir, subsp,"/chr21.f7.", subsp,".cov")
+      if(title!=""){meta.data.subsp=meta.data[meta.data$Subspecies==title,]}}
+    # Read in PCAngsd output
+    cov=read.table(input)
+    pcs=eigen(cov)
+    # Procrustes transformation
+    pro=procrustes(pcs$vectors[,1:2], as.matrix(meta.data.subsp[, c("Longitude", "Latitude")]),translation=TRUE,dilation=TRUE)$X.new
+    colnames(pro)=c("trans.long", "trans.lat")
+    pro.meta.data=cbind(meta.data.subsp, pro)
+    # Hulls
+    find_hull=function(pro.meta.data) pro.meta.data[chull(pro.meta.data[,'trans.long'], pro.meta.data[,'trans.lat']), ]
+    hulls=ddply(pro.meta.data, group, find_hull)
+    # Limits
+    ## x
+    xmin=min(min(pro.meta.data$trans.long), min(pro.meta.data$Longitude))
+    xmax=max(max(pro.meta.data$trans.long), max(pro.meta.data$Longitude))
+    xmin=xmin-(xmax-xmin)*0.2
+    xmax=xmax+(xmax-xmin)*0.2
+    ## x
+    ymin=min(min(pro.meta.data$trans.lat), min(pro.meta.data$Latitude))
+    ymax=max(max(pro.meta.data$trans.lat), max(pro.meta.data$Latitude))
+    ymin=ymin-(ymax-ymin)*0.1
+    ymax=ymax+(ymax-ymin)*0.1
+    # Line connecting polygon centroids to geographic locations
+    centroids=aggregate(as.matrix(pro.meta.data[,c("trans.long", "trans.lat")]) ~ Site, data=pro.meta.data, FUN=mean)
+    colnames(centroids)=c("Site","cent.long", "cent.lat")
+    lines=merge(centroids, unique(pro.meta.data[,c("Site","Longitude", "Latitude")]))
+    # Plot
+    world_map=map_data("world")
+    plot=ggplot(data=pro.meta.data, aes(x=trans.long, y=trans.lat, fill=Site, colour=Site)) +
+      theme_minimal() +
+      geom_polygon(data=world_map, aes(x = long, y = lat, group = group), fill="grey93", colour = "darkgrey") +
+      coord_sf(xlim=c(xmin, xmax), ylim=c(ymin, ymax)) +
+      geom_point(aes(shape=Site), size = 1) + 
+      geom_point(aes(x=Longitude, y=Latitude, shape=Site), size = 4) + 
+      geom_polygon(data = hulls, alpha = 0.5) + 
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+      guides(fill=guide_legend(ncol=1), shape=guide_legend(ncol=1)) + 
+      geom_segment(data = lines, aes(x = Longitude, y = Latitude, xend = cent.long, yend = cent.lat, colour = Site))+
+      ggtitle(title) +
+      scale_shape_manual(values=rep(0:6, 10)) +
+      geom_text_repel(data=lines, aes(x=Longitude, y=Latitude, label=Site), 
+                        size = 3, segment.color="black", segment.linetype=1, segment.size=0.2, show.legend = FALSE, fontface = 'bold', colour="black") +
+      xlab("") + ylab("")
+    print(plot)
+  }
+}
+
+plot.PCA.map(c("c", "e", "n", "w"), 
+         f7_exome,
+         paste0(pcangsd_output_dir, "/chr21.f7.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"))
+```

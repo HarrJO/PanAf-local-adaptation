@@ -1,0 +1,475 @@
+---
+title: "Exome Sample Filtering: Remove Related Swapped Samples (f5)"
+author: "Harrison Ostridge"
+date: "08/03/2021"
+output: html_document
+---
+
+f1_exome.sample.filtering.Rmd - Remove Contaminated and Low Coverage Samples.
+  - PC1 threshold.
+  - <1% human contamination.
+  - >0.5x coverage.
+
+f2_exome.sample.filtering.Rmd - Remove Related Samples.
+  - Remove first order relatives as estimated using ngsRelate.
+
+f3_exome.sample.filtering.Rmd - Remove Samples Which Do Not Cluster Correctly in Demographic Analyses.**
+  - Analyse PCAngsd and NGSadmix results.
+  - Identify poor quality samples and sample swaps.
+  
+f4_exome.sample.filtering.Rmd - Reassign Swapped Samples
+  - Identify samples which have been misslabeled and reassign them to their correct communities
+
+**f5_exome.sample.filtering.Rmd - Remove Related Swapped Samples**
+  - After reassigning swapped samples, we need to check they are not related to samples in their new (correct) communities.
+  - This is needed because the first stage of removing relatives was ran within each of the original communities.
+
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/sample_filtering/exome/') 
+min.cov=0.5
+```
+
+#### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(readxl)
+library(plyr)
+library(tidyr)
+library(stringr)
+library(igraph)
+library(RColorBrewer)
+library(grid) 
+library(gridExtra)
+library(fields)
+library(networkD3)
+library(htmlwidgets)
+
+output_dir="output/"
+pcangsd_output_dir="../../pcangsd/exome/output/"
+ngsadmix_output_dir="../../ngsadmix/exome/output/"
+ngsrelate_output_dir="../../ngsrelate/exome/output"
+```
+
+#### Read in data
+
+```{r}
+# Read in metadata
+f4_exome=read.csv(paste0(output_dir, "/f4/f4.metadata.csv"), check.names = FALSE)
+## Ensure it is in the correct order
+f4_exome=f4_exome[order(f4_exome$Sample),]
+# Read in filter table
+filter.table=read.csv(paste0(output_dir, "/f3/f3.filtertable.csv"), check.names = FALSE)
+```
+
+## NGSrelate
+
+I quickly re-ran NGSrelate on only Conkouati and Mt Sangbe to check the reassigned samples are not related to any others.
+
+```{r}
+# Read ngsRelate output
+## Combine into one big file 
+ngsrelate.out=data.frame()
+for(com in c("c.Conkouati", "w.MtSangbe")){
+  com.dir=paste0(ngsrelate_output_dir, "/f4.0.5x.c.Conkouati.w.MtSangbe_doMajorMinor.1_snp.p.1e-6_minMAF.5pct/", com, "/")
+  # If the directory is not empty (some communities have 0 samples after previous filtering) read in the ngsRelate output
+  if(length(list.files(com.dir, pattern=".ngsrelate.out$"))!=0){
+    com.result=read.table(paste0(com.dir, com, ".ngsrelate.out"), header=T)
+    # Combine results from each community into one large file
+    ngsrelate.out=rbind(ngsrelate.out, com.result)
+  }
+}
+#ngsrelate.out
+```
+
+Claudia said she identified first order relatives as pairs with a theta >0.1875 (emailed on 16/03/2021). 
+
+```{r}
+# Pull out related pairs
+related.pairs=ngsrelate.out[ngsrelate.out$theta>0.1875,c("ida", "idb", "theta")]
+# Remove file suffix from id columns to leave Sample names 
+related.pairs$ida=gsub('_exome.addRG.bam', '', related.pairs$ida)
+related.pairs$idb=gsub('_exome.addRG.bam', '', related.pairs$idb)
+related.pairs
+
+f4_exome[f4_exome$Sample=="CMNP1-24" | f4_exome$Sample=="Con2-80", ]
+```
+
+CMNP1-24 is actually a relative of Con2-80 and Con2-80 has a far higher coverage so I will just discard CMNP1-24.
+
+```{r}
+f5_exome=f4_exome
+f5_exome=f5_exome[f5_exome$Sample!="CMNP1-24",]
+
+filter.table=rbind(filter.table, c("f5", paste0("Reassigned non-Relatives"),
+                                   nrow(f5_exome), 
+                                   paste0(round(nrow(f5_exome)/(as.numeric(filter.table[1, 'Number of Samples']))*100, digits = 2), "%")))
+# Write filter table
+write.csv(filter.table, paste0(output_dir, "/f5/f5.filtertable.csv"), row.names=F)
+```
+
+### Get stats
+
+```{r}
+# Sample sizes
+cat("Number of communities: ", length(unique(f5_exome$Community)), "\n")
+freq.per.group=data.frame(table(f5_exome$Community))
+cat("Mean samples per community: ", mean(freq.per.group$Freq), 
+    "\nMax samples per community: ", max(freq.per.group$Freq), 
+    "\nMin samples per community: ", min(freq.per.group$Freq), "\n")
+table(unique(f5_exome[c('Community', 'Subspecies')])$Subspecies)
+# Coverage
+cat(" Mean coverage per site:", mean(f5_exome$Coverage), "\n", 
+    "Median coverage per site:", median(f5_exome$Coverage), "\n",
+    "Minimum coverage per site:", min(f5_exome$Coverage), "\n",
+    "Maximum coverage per site:", max(f5_exome$Coverage))
+```
+
+## Write files
+
+```{r}
+write.table(f5_exome, paste0(output_dir, "/f5/f5.metadata.csv", sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE))
+```
+
+
+```{r}
+# Frequency per group
+freq.per.com=data.frame(table(f5_exome$Community))
+# Rename columns
+colnames(freq.per.com)=c("Community", "Freq")
+
+write.table(freq.per.com, paste0(output_dir, "/f5/f5_freq.per.com.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+```
+
+### Write BAM file lists
+
+#### All
+
+```{r}
+# Ensure it is ordered according to sample name
+f5_exome=f5_exome[order(f5_exome$Sample),]
+# All
+write.table(f5_exome$BAM.mapped.on.target,
+            paste0(output_dir, "/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel/bam.filelist.all"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+#### Subspecies
+
+```{r}
+# Central
+write.table(f5_exome[f5_exome$Subspecies=="Central",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel/bam.filelist.c"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Eastern
+write.table(f5_exome[f5_exome$Subspecies=="Eastern",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel/bam.filelist.e"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Nigeria-Cameroon
+write.table(f5_exome[f5_exome$Subspecies=="Nigeria-Cameroon",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel/bam.filelist.n"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Western
+write.table(f5_exome[f5_exome$Subspecies=="Western",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel/bam.filelist.w"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+```{r eval=FALSE}
+coms=unique(f5_exome$Community)
+for(com in coms){
+  f5_exome.com=f5_exome[f5_exome$Community==com, ]
+  write.table(f5_exome.com$BAM.mapped.on.target,
+              paste0(output_dir, "/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel/bam.filelist.", com),
+              row.names=FALSE, col.names=FALSE, quote=FALSE)
+}
+```
+
+```{bash eval=FALSE}
+scp -r output/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel myriad:/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/
+```
+
+```{bash eval=FALSE}
+scp -r output/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel myriad:/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/
+```
+
+## Write individual filter for running PCAngsd per subspecies using beagle file from all samples
+
+```{r}
+f5_exome$central=0
+f5_exome$eastern=0
+f5_exome$nigeria.cameroon=0
+f5_exome$western=0
+
+f5_exome$central[f5_exome$Subspecies == "Central"] = 1
+f5_exome$eastern[f5_exome$Subspecies == "Eastern"] = 1
+f5_exome$nigeria.cameroon[f5_exome$Subspecies == "Nigeria-Cameroon"] = 1
+f5_exome$western[f5_exome$Subspecies == "Western"] = 1
+
+
+write.table(t(f5_exome$central), paste0(output_dir, "/f5/pcangsd/c.inds"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(t(f5_exome$eastern), paste0(output_dir, "/f5/pcangsd/e.inds"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(t(f5_exome$nigeria.cameroon), paste0(output_dir, "/f5/pcangsd/n.inds"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(t(f5_exome$western), paste0(output_dir, "/f5/pcangsd/w.inds"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+```{bash eval=FALSE}
+scp output/f5/pcangsd/* myriad:/home/ucfajos/analysis/phase1and2_exome_analysis/pcangsd/ind.filters/mapped.on.target/f5/
+```
+
+### Plot samples per community
+
+```{r}
+plot.sample.freq=function(meta.data, group="Community", title=NULL, output.file=NULL, hlines=F){
+  # Frequency per group
+  freq.per.group=data.frame(table(meta.data[[group]]))
+  # Rename columns
+  colnames(freq.per.group)=c(group, "Freq")
+  # Add subspecies information
+  freq.per.group=merge(freq.per.group, unique(meta.data[,c(group, "Subspecies")]))
+  # Order by frequency
+  freq.per.group=freq.per.group[order(freq.per.group$Subspecies, freq.per.group$Freq),]
+  # Make group type factor
+  freq.per.group[[group]]=factor(freq.per.group[[group]], levels=unique(freq.per.group[[group]]))
+  # Change Nigeria-Cameroon title so it fits in the plot
+  freq.per.group$Subspecies[freq.per.group$Subspecies=="Nigeria-Cameroon"] = "N-C"
+  # Plot
+  freq.per.group.plot=ggplot(freq.per.group) +
+    theme_bw() +
+    geom_bar(aes(as.factor(.data[[group]]), Freq, fill=Subspecies), stat="identity") +
+    facet_grid(.~Subspecies, space="free", scales="free_x") + 
+    theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1), legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+    labs(title=title, x=paste0(group), y = "Number of Samples") +
+    scale_fill_manual(values = c('green3', 'darkorange', 'red', 'blue'))
+  if(hlines==T){
+    freq.per.group.plot=freq.per.group.plot+
+      geom_hline(yintercept = 6, linetype="dashed")+
+      geom_hline(yintercept = 8, linetype="dashed", colour="darkgrey")}
+  # Save plot
+  if(!is.null(output.file)){ggsave(paste0(output.file), freq.per.group.plot, height=6, width=10)}
+  # Show plot
+  print(freq.per.group.plot)
+}
+```
+
+```{r}
+plot.sample.freq(f5_exome, title="f5: Samples per Community", output.file=paste0(output_dir, "/f5/f5_samples.per.com.pdf"))
+```
+
+### Sample sites supplementary table
+
+```{r}
+sample_site=unique(f5_exome[c('Site', 'Country', 'Subspecies', 'Longitude', 'Latitude')])
+sample_site=sample_site[order(sample_site$Subspecies, sample_site$Site),]
+write.table(sample_site, paste0(output_dir, "/f5/f5_sample_sites.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+```
+
+### Filter table Sankey diagram
+
+#### sankeyNetwork
+
+```{r}
+filter.table$`Number of Samples`=as.numeric(filter.table$`Number of Samples`)
+# Samples kept
+source=filter.table[1:(nrow(filter.table)-1), 'Filter']
+target=filter.table[2:nrow(filter.table), 'Filter']
+n.samples=filter.table[2:nrow(filter.table), 'Number of Samples']
+filtered.in.table=data.frame(source=source, target=target, value=n.samples)
+filtered.in.table
+
+# Samples filtered out
+n.samples=c()
+for(i in 1:(nrow(filter.table)-1)){
+  n.samples[i]=filter.table[i, 'Number of Samples']-filter.table[(i+1), 'Number of Samples']
+}
+target=c("PC1<-0.01", "Human Cont.>1%", "Coverage<0.5x", "Relatives", "Pop. Structure Outliers", "Reassigned Relatives")
+filtered.out.table=data.frame(source=source, target=target, value=n.samples)
+
+# Combine into one table
+sankey.table=rbind(filtered.in.table, filtered.out.table)
+
+# Plot Sankey diagram
+# From these flows we need to create a node data frame: it lists every entities involved in the flow
+nodes <- data.frame(
+  name=c(as.character(sankey.table$source), 
+  as.character(sankey.table$target)) %>% unique()
+)
+ 
+# With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+sankey.table$IDsource <- match(sankey.table$source, nodes$name)-1 
+sankey.table$IDtarget <- match(sankey.table$target, nodes$name)-1
+ 
+# Make the Network
+my_color <- 'd3.scaleOrdinal() .domain(["white"]) .range(["white"])'
+
+sankey.plot=sankeyNetwork(Links = sankey.table, Nodes = nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "value", NodeID = "name", 
+              sinksRight=FALSE, colourScale=my_color, fontSize= 20, nodePadding=50)
+sankey.plot
+# save the widget
+saveWidget(sankey.plot, file=paste0(output_dir, "/f5/f5_filter.sankey.diagram.html"))
+```
+
+#### ggsankey
+
+```{r}
+# install.packages("remotes")
+# remotes::install_github("davidsjoberg/ggsankey")
+library(ggsankey)
+
+sankey.df=NULL
+for(filter in filter.table$Filter){
+  n_pass=filter.table[filter.table$Filter==filter, "Number of Samples"]
+  if(n_pass==max(filter.table$`Number of Samples`)){
+    pass_lab=n_pass
+  }else{
+      pass_lab=paste0("Pass\n(", n_pass, ")")
+  }
+  n_fail=max(filter.table$`Number of Samples`)-n_pass
+  fail_lab=paste0("Discard\n(", n_fail, ")")
+  
+  tmp=data.frame(column=c(rep(pass_lab, n_pass), rep(fail_lab,n_fail)))
+  colnames(tmp)=filter
+  if(is.null(sankey.df)){
+    sankey.df=tmp
+  }else{
+    sankey.df=cbind(sankey.df, tmp)
+  }
+}
+# Reshape
+sankey.df=sankey.df %>%
+  make_long(filter.table$Filter)
+
+# Plot
+## Prepare fill colours
+nodes=unique(sankey.df$node)
+fills=rep("blue", length(nodes))
+names(fills)=nodes
+fills[grepl("Discard", nodes)]="red"
+# Plot
+ggplot(sankey.df, aes(x = x, 
+               next_x = next_x, 
+               node = node, 
+               next_node = next_node,
+               fill = factor(node),
+               label = node)) +
+  geom_sankey(flow.alpha = 0.5) +
+  geom_sankey_label(aes(fill = factor(node)), size = 3, color = "white", fontface=2) +
+  scale_fill_manual(values = fills) +
+  theme_sankey() +
+  labs(title="Sample Filtering", x="Cumulative filter") +
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle = 45, hjust=1, face=2), legend.position = "none")
+
+```
+
+```{r}
+#install.packages("remotes")
+#remotes::install_github("davidsjoberg/ggsankey")
+library(ggsankey)
+
+filter.table.plot=filter.table
+filter.table.plot[filter.table.plot$Filter=="Human Cont. < 1%", "Filter"]="Human\ncontamination < 1%"
+filter.table.plot[filter.table.plot$Filter=="No Relatives", "Filter"]="No relatives"
+filter.table.plot[filter.table.plot$Filter=="Pop. Structure", "Filter"]="No population\nstructure outliers"
+filter.table.plot[filter.table.plot$Filter=="Reassigned non-Relatives", "Filter"]="No relatives\n(after fixing\nsample swaps)"
+sankey.df=NULL
+for(i in 1:nrow(filter.table.plot)){
+  n_pass=filter.table.plot[i, "Number of Samples"]
+  if(n_pass==max(filter.table.plot$`Number of Samples`)){
+    pass_lab=paste0(n_pass)
+    n_fail=0
+    n_other=0
+  }else{
+      pass_lab=paste0(n_pass)
+      n_fail=filter.table.plot$`Number of Samples`[i-1]-n_pass
+      n_other=max(filter.table.plot$`Number of Samples`)-n_pass-n_fail
+  }
+  fail_lab=paste0("Fail\n(", n_fail, ")")
+  other_lab=NA
+  
+  tmp=data.frame(column=c(rep(pass_lab, n_pass), rep(fail_lab,n_fail), rep(other_lab, n_other)))
+  colnames(tmp)=filter.table.plot$Filter[i]
+  if(is.null(sankey.df)){
+    sankey.df=tmp
+  }else{
+    sankey.df=cbind(sankey.df, tmp)
+  }
+}
+# Adding a these rows means the figure is lined up better
+NAs=sankey.df[1,]
+NAs[1,1:ncol(NAs)]=NA
+sankey.df=rbind(sankey.df, NAs)
+NAs[1,1]="a"
+sankey.df=rbind(sankey.df, NAs)
+#n_filt=min(filter.table.plot$`Number of Samples`)
+#n_rev=max(filter.table.plot$`Number of Samples`)-n_filt
+#sankey.df$Filtered=c(rep(paste0("Pass\n(", n_filt, ")"), n_filt),rep(paste0("Removed\n(",n_rev , ")"), n_rev))
+
+# Reshape
+sankey.df=sankey.df %>%
+  make_long(filter.table.plot$Filter)
+#sankey.df=sankey.df[!is.na(sankey.df$node),]
+# Plot
+## Prepare fill colours
+nodes=unique(sankey.df$node)
+fills=rep("blue", length(nodes))
+names(fills)=nodes
+fills[grepl("Fail", nodes)]="firebrick2"
+fills["a"]="white"
+na_fill=c("white")
+
+# Plot
+ggplot(sankey.df, aes(x = x, 
+               next_x = next_x, 
+               node = node, 
+               next_node = next_node,
+               fill = factor(node),
+               label = node)) +
+  geom_sankey(flow.alpha = 0.5) +
+  geom_sankey_label(aes(fill = factor(node)), size = 3, color = "white", fontface=2, hjust = -0.2) +
+  scale_fill_manual(values = fills, na.value="white") +
+  theme_sankey() +
+  labs(title="Exome Sample Filtering", x="Filter") +
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle = 45, hjust=1, face=2), legend.position = "none")
+
+```
+
+#### Simplified table for presentations
+
+I create a simplified diagram which shows just three steps corresponding to the three main focuses of filtering: contamination, coverage and relatives. I have moved the population structure outliers to those removed due to high conbtamination as I thought this made the most sense. This diagram is just for presentations.
+
+```{r}
+links=data.frame(
+  source=c("Unfiltered", "Unfiltered", "Low Contamination", "Low Contamination", "Coverage >0.5x", "Coverage >0.5x"),
+  target=c("Low Contamination", "High Contamination", "Coverage >0.5x", "Coverage <0.5x", "No Relatives", "Relatives"),
+  'Number.of.Samples'=c(528, 300, 462, 66, 415, 47),
+  IDsource=c(0,0,1,1,3,3),
+  IDtarget=c(1,2,3,4,5,6),
+  group=c("Keep", "Discard", "Keep", "Discard", "Keep", "Discard"))
+# Plot Sankey diagram
+# From these flows we need to create a node data frame: it lists every entities involved in the flow
+nodes=data.frame(
+  name=c("Unfiltered", "Low Contamination", "High Contamination", "Coverage >0.5x", "Coverage <0.5x", "No Relatives", "Relatives"),
+  #group=c("Unfiltered", "Keep", "Discard", "Keep", "Discard", "Keep", "Discard")
+  group="Unfiltered")
+
+my_color ='d3.scaleOrdinal() .domain(["Keep", "Discard", "Unfiltered"]) .range(["#69b3a2", "tomato", "black"])'
+
+sankey.plot=sankeyNetwork(Links = links, Nodes = nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "Number.of.Samples", NodeID = "name", 
+              sinksRight=FALSE, colourScale=my_color, LinkGroup="group", NodeGroup="group", fontSize=30, nodePadding=50)
+sankey.plot
+# save the widget
+saveWidget(sankey.plot, file=paste0(output_dir, "/simple.filter.sankey.diagram.html"))
+```

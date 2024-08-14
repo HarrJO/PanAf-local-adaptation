@@ -1,0 +1,426 @@
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_aux/') 
+```
+
+```{css, echo=FALSE}
+.scroll {
+  max-height: 500px;
+  overflow-y: auto;
+  background-color: inherit;
+}
+```
+
+#### Parameters
+
+```{r}
+subsps=c('all', 'ce', 'w')
+env_data='f_over_sum_known_trees'
+habitat_col=c('freq_trees_Forest'='black')
+chr21=TRUE
+flanks=1000
+```
+
+```{r echo=FALSE}
+if(chr21){
+  title_null="chr21 null"
+  suffix=paste0(".non-genic_",flanks,".flanks")
+}else{
+  title_null="random shuffling null"
+  suffix="-cov_cor"
+}
+```
+
+---
+title: "`r paste0("BayPass AUX Top Genes - ", env_data, ", ", title_null)`"
+subtitle: "`r paste0("Subspecies datasets: ", paste(subsps, collapse = ", "))`"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+FPRs were assigned in `r paste0("./baypass_aux/scripts/", env_data, "/", env_data,".baypass_aux_candidate.Rmd")`.
+
+This script looks at the functions of the few SNPs with the strongest evidence of selection.
+
+#### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(dplyr)
+library(viridis) 
+
+source("../scripts/baypass_tools.R")
+source("scripts/baypass_aux_tools.R")
+source("../baypass_core/scripts/distribution_of_candidates_in_the_genome_tools-cov_cor.R")
+
+env_dir="../../../environmental_data/output/"
+formatted_aux_out_dir="output/formatted_baypass_aux_output/"
+formatted_aux_out_fprs_dir="output/baypass_aux_output_with_fprs/"
+gene_cards_file="../../../genomic_data/gene_cards/GeneFuncDescription.csv"
+annotation_file="../../../gowinda/baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf"
+gowinda_snp_file_dir="../../../gowinda/baypass_aux/output/gowinda_input/snp_files/"
+```
+
+#### Read in data
+
+```{r echo=FALSE}
+## Environmental data file
+env_file=read.csv(paste0(env_dir, "/meta_data.env.pops.imputed.csv"))
+
+# Subspecies specific files
+betai_fpr=list()
+allele.freq=list()
+subsp.col=list()
+cov.in=list()
+
+if(chr21){
+  suffix=paste0(".non-genic_",flanks,"bp.flanks")
+}else{
+  suffix="-cov_cor"
+}
+
+for(subsp in subsps){
+  cat("-", subsp, "\n")
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  ## Allele frequencies
+  allele.freq[[subsp]]=fread(paste0("../baypass_core/output/formatted_baypass_core_output/f5", subsp.file,
+          ".pops_missing.pops.", miss.pop,"_minMAC2_summary_pij.out_pop.info"))
+  ### Population names
+  pops=unique(allele.freq[[subsp]]$Population)
+  pops=pops[order(pops)]
+  #### Population colours (according to subspecies)
+  subsp.col[[subsp]]=c()
+  for(pop in pops){
+    if(startsWith(pop, "c.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "green3")}
+    if(startsWith(pop, "e.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "darkorange")}
+    if(startsWith(pop, "n.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "red")}
+    if(startsWith(pop, "w.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "blue")}
+  }
+  ## Read BayPass AUX output
+  ### Annotated Betai
+  ann=unique(fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, "_summary_betai.out_row.per.gtf.annot_5000bp.flanks_all_runs.gz"),
+                         select=c('chr', 'pos', 'gene')))
+  ann[ann$gene=='.','gene']=NA
+  ### FPR data
+  betai_fpr[[subsp]]=unique(fread(paste0(formatted_aux_out_fprs_dir, "/f5", subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", 
+                                         env_data, "_summary_betai.out_all_runs.fpr", suffix)))
+  betai_fpr[[subsp]]=merge(betai_fpr[[subsp]], ann, by=c('chr', 'pos'), all.x=TRUE)
+  betai_fpr[[subsp]]$log_fpr=-log(betai_fpr[[subsp]]$fpr)
+  ann=NULL
+  
+  ## Cov file
+  cov.in[[subsp]][['Real']]=fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, "_covariate.std"))
+  
+  covs=unique(betai_fpr[[1]]$COVARIABLE_name)
+  ### Add covariable names as row names (alphabetical order)
+  names(habitat_col)=covs[order(covs)]
+  rownames(cov.in[[subsp]][['Real']])=covs[order(covs)]
+  ### Add population names as column names (alphabetical order)
+  colnames(cov.in[[subsp]][['Real']])=pops
+}
+gene_cards=fread(gene_cards_file)
+gene_cards$symbol=toupper(gene_cards$symbol)
+covs=unique(betai_fpr[[1]]$COVARIABLE_name)
+
+gtf=read.table(annotation_file)
+```
+
+# Select top genes
+
+There are two main ways this can be done and I allow for either using the 'mode' option. 
+
+1- Select top SNPs the treat the genes they belong to as the top genes
+
+2-  Select the top genes.
+
+  - This could be done by taking the highest/lowest statistic per gene and then ranking them, however, I would need to account for gene length
+  
+  - Alternatively, I can just order SNPs by statistics and read down the file until I have the number of genes I want - this is what I do however I do report the startistics for the highest ranked SNP per gene per bin.
+
+There are also two main statistics that I could use to select the top SNPs/genes
+
+1- FPR
+
+  - This issue with using minimum FPR to select the top SNPs is that the minimum possible FPR is determined by the number of null SNPs in that coverage bin.
+
+2- Bayes Factor
+
+
+I could also use Beta (correlation coefficient) to select SNPs/genes with the largest effect sizes.
+
+```{r}
+mode='snp'
+top_n=100
+```
+
+## Select top N SNPs/genes by minium FPR
+
+```{r}
+top_snps=list()
+cat("Mode: ", mode)
+for(subsp in subsps){
+  for(cov in covs){
+    betai_fpr.tmp=betai_fpr[[subsp]][betai_fpr[[subsp]]$COVARIABLE_name==cov,]
+    betai_fpr.tmp=betai_fpr.tmp[order(betai_fpr.tmp$fpr, -betai_fpr.tmp$`BF(dB).median`, -abs(betai_fpr.tmp$M_Beta.median)),]
+    if(mode=='snp'){
+      betai_fpr.tmp=merge(head(unique(betai_fpr.tmp[,c('chr', 'pos')]), top_n), betai_fpr.tmp, by=c('chr', 'pos'), all.x=TRUE)
+    }else if(mode=='gene'){
+      betai_fpr.tmp=betai_fpr.tmp[!is.na(betai_fpr.tmp$gene),]
+      betai_fpr.tmp=head(unique(betai_fpr.tmp[,c('gene')]), top_n)
+    }else{
+      stop("'mode' must be set to 'gene' or 'snp'")
+    }
+    top_snps[[subsp]][[cov]]=betai_fpr.tmp
+  }
+}
+
+```
+
+## Select top N SNPs/genes by top BF per coverage bin
+
+This issue with using minimum FPR to select the top SNPs is that the minimum possible FPR is determined by the number of null SNPs in that coverage bin. For the purpose of selecting the top SNPs, it may be best to select the highest BF values per bin instead.
+
+I first select the number of top SNPs/genes I want then work out how many SNPs are in each coverage bin and use this to select the top SNPs proportionally.
+
+```{r message=FALSE, warning=FALSE, out.width="33%"}
+if(mode=='snp'){
+  cols=c('chr', 'pos')
+}else if(mode=='gene'){
+  cols='gene'
+}else{
+  stop("'mode' must be set to 'gene' or 'snp'")
+}
+top=list()
+for(subsp in subsps){
+  for(cov in covs){
+    # Get number of SNPs per bin
+    n_per_bin=table(unique(betai_fpr[[subsp]][,c(cols, 'coverage_bin')])$coverage_bin)
+    # Get total number of SNPs
+    tot=sum(n_per_bin)
+    # Get the top number of SNPs to select from each bin
+    top_n_per_bin=round(top_n*n_per_bin/tot)
+    bins=unique(betai_fpr[[subsp]]$coverage_bin)
+    for(bin in bins[order(bins)]){
+      betai_fpr.tmp=betai_fpr[[subsp]][betai_fpr[[subsp]]$COVARIABLE_name==cov & betai_fpr[[subsp]]$coverage_bin==bin,]
+      betai_fpr.tmp=betai_fpr.tmp[order(-betai_fpr.tmp$`BF(dB).median`, -abs(betai_fpr.tmp$M_Beta.median)),]
+      if(mode=='gene'){
+        # Remove non-geneic 
+        betai_fpr.tmp=betai_fpr.tmp[!is.na(betai_fpr.tmp[[cols]]),]
+      }
+      # Select data for top SNPs/genes
+      betai_fpr.tmp=merge(head(unique(betai_fpr.tmp[,cols, drop=FALSE]), top_n_per_bin[bin]), betai_fpr.tmp, by=cols, all.x=TRUE)
+      if(mode=='gene'){
+        # Report the SNP within the gene with the highest BF
+        betai_fpr.tmp=betai_fpr.tmp %>% group_by(gene) %>% top_n(1, `BF(dB).median`)
+      }
+      if(bin==1){
+        top[[subsp]][[cov]]=betai_fpr.tmp
+      }else{
+        top[[subsp]][[cov]]=rbind(top[[subsp]][[cov]], betai_fpr.tmp)
+      }
+    }
+    # Order output
+    top[[subsp]][[cov]]=top[[subsp]][[cov]][order(-top[[subsp]][[cov]]$`BF(dB).median`, top[[subsp]][[cov]]$fpr),]
+    top[[subsp]][[cov]]$BF_rank=rank(-top[[subsp]][[cov]]$`BF(dB).median`, ties.method="min")
+    top[[subsp]][[cov]]$fpr_rank=rank(top[[subsp]][[cov]]$fpr, ties.method="min")
+    print(head(top[[subsp]][[cov]][!is.na(top[[subsp]][[cov]]$gene),c('BF(dB).median', 'M_Beta.median', 'gene')], 10))
+    
+  }
+  # Volcano plot
+  aux_volcano.v2(top[[subsp]][[cov]], 
+                   x='M_Beta.median', y='`BF(dB).median`', colour_col='COVARIABLE_name', colours=habitat_col[covs], log_density=FALSE)
+  # Manhatten plot
+  manhattan_plot(top[[subsp]][[cov]], stat="log_fpr", cov_col="black", title=paste(subsp, "; ", cov, "top 100 SNPs")) 
+  # Env vs AF plot
+  tmp.list=list()
+  tmp.list[[subsp]]=top[[subsp]][[cov]]
+  run_env_vs_AF.v4(tmp.list, cov.in, allele.freq[subsp], stats=c("M_P", "M_Pstd"), fprs=1)
+}
+```
+
+### Write gowinda files
+
+```{r}
+if(chr21){
+  suffix=paste0(".non-genic_",flanks,"bp.flanks")
+}else{
+  suffix="-cov_cor"
+}
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+    # Write Gowinda input files
+  for(cov in unique(betai_fpr[[subsp]]$COVARIABLE_name)){
+    ## Both
+    write.table(unique(top[[subsp]][[cov]][, c("chr", "pos")]), 
+                paste0(gowinda_snp_file_dir, env_data,"/",subsp,".", env_data,"-",cov,".top",top_n,"snps" ,suffix),
+                col.names=F, row.names=F, sep="\t")
+    ## Positive beta
+    write.table(unique(top[[subsp]][[cov]][top[[subsp]][[cov]]$M_Beta.median>0, c("chr", "pos")]), 
+                paste0(gowinda_snp_file_dir, env_data,"/",subsp,".", env_data,"-",cov,".top",top_n,"snps" ,suffix, ".pos_beta"),
+                col.names=F, row.names=F, sep="\t")
+    ## Negative beta
+    write.table(unique(top[[subsp]][[cov]][top[[subsp]][[cov]]$M_Beta.median<0, c("chr", "pos")]), 
+                paste0(gowinda_snp_file_dir, env_data,"/",subsp,".", env_data,"-",cov,".top",top_n,"snps" ,suffix, ".neg_beta"),
+                col.names=F, row.names=F, sep="\t")
+  }
+}
+
+```
+
+# Investigate top genes
+
+## Overlap
+
+```{r out.width="50%"}
+# Re-structure data for venn diagram plotting
+top_2=list()
+for(cov in covs){
+  for(subsp in subsps){
+    tmp=top[[subsp]][[cov]]
+    tmp$COVARIABLE_name=cov
+    if(nrow(tmp)>0){
+      top_2[[subsp]]=rbind(top_2[[subsp]], tmp)
+    }else{
+      top_2[[subsp]]=tmp
+    }
+  }
+}
+candidate_overlap.v3(top_2, fprs=1)
+```
+
+### GeneCards Data 
+
+I started a conversation with the people at GeneCards through the chat window at https://www.genecards.org/ (you can also email support@genecards.org). It took a long time but I finally got them to send me a csv with gene names and descriptions of each gene. This means that rather than manually searching each gene name I can just search this file.
+
+#### Things to look out for
+
+##### Malaria related
+
+Malaria is more prevalent in forest areas, we therefore might expect to see selection for malaria in forests.
+
+```{r}
+malaria=c("HBB", "ACKR1", "DARC", "ATP2B4", "PIEZO1", "GYPA", "GYPB", "ABO")
+for(subsp in subsps){
+  cat(subsp, "\n")
+  print(top_2[[subsp]][top_2[[subsp]]$gene %in% malaria, c('chr', 'pos', 'BF_rank', 'fpr_rank', 'BF(dB).median', 'COVARIABLE_name', 'M_Beta.median', 'fpr', 'gene')])
+}
+
+top_2[[subsp]][order(top_2[[subsp]]$fpr),]
+
+tmp=top_2[['w']][order(top_2[['w']]$fpr),]
+tmp[tmp$chr_pos %in% c('4_145040845', '4_145039806'),]
+```
+
+##### Pathways involved in adaptation to desserts in other mammals
+
+These underlie adaptation to stresses such as dehydration and temperature regulation which are stresses we might expect in savanna too.
+
+- Fat metabolism 
+
+  - Water produced from fat metabolism can be utilised to reduce dehydration stress
+
+  - Fat reserves provide insulation and can be used when food is scarce
+
+- Insulin signalling 
+
+- Thyroid system
+
+- Radiation - pigmentation
+
+- Kidneys
+
+  - Arachidonic acid metabolism pathway
+
+- Blood pressure
+
+```{r}
+#dessert_genes=c("NETO1", "SLC2A12", "KCNJ2", "KNG1", "SLC12A2", "SLC2A9", "CYP2", "CPY2J2", "UCP1", "KCNJ2", "KNG1")
+
+# From figure 1D Rocha et al. (2021)
+dessert_genes=unique(c("GDF10", "APPL2", "BMP2", "BBS1", "PRKAB1", "NETO1", "KCNJ2", "TRHDE", "KCNJ2", "KNG1", "NR3C2", "ATP12A", "SLC8A1", "KCNJ5", 
+                       "TRHDE", "GPX3", "ERP44", "SLC4A4", "PPRSS8", "CYP2J2", "APPL1", "APPL2", "SLLCA12", "SLC2A9", "CYP2J", "CYP2E", "GPX3", "CYP4V2", 
+                       "SLCA1", "SLC12A3", "SLC2A9", "SLC8A1", "SLC47A1"))
+  
+for(subsp in subsps){
+  cat(subsp, "\n")
+  print(top_2[[subsp]][top_2[[subsp]]$gene %in% dessert_genes, c('chr', 'pos', 'BF(dB).median', 'COVARIABLE_name', 'M_Beta.median', 'fpr', 'gene')])
+}
+```
+
+##### Other hypotheses
+
+- More nocturnal activity in hotter areas might lead to selection for vison - we have some evidence for this in the gene set enrichment for candidates in central-eastern
+
+- Differences in diets - digestive enzymes
+
+- Pathogen/immune related genes - more pathogens in forest
+
+- Reproductive traits
+
+  - Higher population densities in forest could lead to more sexual selection?
+  
+#### Look at all genes
+
+```{r class.output="scroll"}
+top_genes_func=list()
+
+for(subsp in subsps){
+  cat("-", subsp, "\n")
+  for(cov in covs){
+    cat("--", cov, "\n")
+    top_genes=toupper(top[[subsp]][[cov]]$gene)
+    top_genes=unique(top_genes[!is.na(top_genes)])
+    # Select the top genes from the GeneCards database
+    top_genes_func[[subsp]][[cov]]=gene_cards[gene_cards$symbol %in% top_genes,]
+    for(gene in top_genes){
+      top.tmp=top[[subsp]][[cov]][top[[subsp]][[cov]]$gene%in%gene, c("BF(dB).median", "M_Beta.median")]
+      top_func.tmp=top_genes_func[[subsp]][[cov]][top_genes_func[[subsp]][[cov]]$symbol==gene,]
+      cat("---", gene, "; BF(dB)=", top.tmp$`BF(dB).median`, "; M_beta=", top.tmp$M_Beta.median,"\n")
+      cat("   ", unique(top_func.tmp$name),"\n")
+      #print(strtrim(top_genes_func[[subsp]][[cov]][top_genes_func[[subsp]][[cov]]$symbol==gene,]$description, 300))
+      print(top_func.tmp$description[!grepl("^Reaction=|^EC |^Kinetic parameters: ", top_func.tmp$description)])
+      cat("\n")
+    }
+    # Which genes are missing a description?
+    cat("---", subsp, " missing genes\n")
+    print(top_genes[!(top_genes %in% gene_cards$symbol)])
+  }
+  cat("\n\n\n\n")
+}
+```
+
+# Look at allele frequencies of genes related to certain traits (using key words)
+
+```{r message=FALSE, warning=FALSE, out.width="33%"}
+key_words=c("pigment")
+
+top_genes_func=list()
+
+for(subsp in subsps){
+  cat("-", subsp, "\n")
+  for(cov in covs){
+    cat("--", cov, "\n")
+    top_genes=toupper(top[[subsp]][[cov]]$gene)
+    top_genes=unique(top_genes[!is.na(top_genes)])
+    # Select the top genes from the GeneCards database
+    top_genes_func[[subsp]][[cov]]=gene_cards[gene_cards$symbol %in% top_genes,]
+    
+    key_word_genes=top_genes_func[[subsp]][[cov]][grepl(paste(key_words, sep="|"), top_genes_func[[subsp]][[cov]]$description, ignore.case=TRUE), 'symbol']
+    cat("Key word(s): ", key_words, "\n")
+    cat("Genes: ", key_word_genes, "\n")
+    
+    tmp.list=list()
+    tmp.list[[subsp]]=top[[subsp]][[cov]][top[[subsp]][[cov]]$gene %in% key_word_genes,]
+    run_env_vs_AF.v4(tmp.list, cov.in, allele.freq[subsp], stats=c("M_P", "M_Pstd"), fprs=1)
+  }
+}
+```
+

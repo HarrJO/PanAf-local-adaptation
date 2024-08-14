@@ -1,0 +1,513 @@
+---
+title: "Exome capture vs chr21 capture statistics"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Josh highlighted the technical differences between exome and chr21 capture data could mae using chr21 as a null problematic. Here I compare the allele frequency estimates and coverage for exomes on the chr21 from the exome capture and chr21 capture. Although we of course only use the non-genic regions as a null, comparing the exonic regions should highlight differences that arise due to the differnt in the capture techniques.
+
+The purpose if this script is to plot the SFS for exomes on chr21 from both the exome and chr21 capture data to check for discrepancies.
+
+#### Setup
+
+```{r echo=FALSE, setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/allele_frequencies/') 
+```
+
+#### Parameters
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+subsps=c("all", "ce", "n", "w")
+subsp_names=list(
+  'all'='All Subspecies',
+  'ce'='Central-Eastern',
+  'c'='Central',
+  'e'='Eastern',
+  'n'='Nigeria-Cameroon',
+  'w'='Western')
+```
+
+#### Library
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(dplyr)
+library(ggplot2)
+library(viridis) 
+
+# Note these apply only to R chunks, if you want to change directories in the bash chunks you will have to do that manually
+exome_out_dir="exome/output/"
+chr21_out_dir="chr21/output/"
+```
+
+### Bedtools - extract chr21 exonic SNPs
+
+Claudia emailed a zip containing coordinates of on target regions (26/03/2021) used to target and sequence the exomes currently at 
+`~/OneDrive - University College London/Projects/PanAf/phase1and2_exomes/data/exome_coordinates/`. The covered and regions files are apparently the same according to the file headers - I decided to use regions just because in the file it uses "target regions" which is the terminology everyone uses.
+
+```{bash}
+# Remove the header lines
+awk 'NR > 2 { print }' ../genomic_data/exome_coordinates/S07604514/S07604514_Regions.bed | sed 's/chr//g' > output/S07604514_Regions_no.head.bed 
+
+# BEDtools intersect
+  for SUBSP in '' '.ce' '.n' '.w'
+  do
+    echo ${SUBSP}
+    
+    if [[ "$SUBSP" == ".n" ]]
+     then
+      MISS_POP=0
+      MISS_POP2=0.0
+    else
+      MISS_POP=0.3
+      MISS_POP2=0.3
+    fi
+    # chr21
+   tail -n +2 chr21/output/chr21.f7${SUBSP}.pops_minInd.6or50pct_missing.pops.${MISS_POP}/chr21.f7${SUBSP}.pops_chr21_missing.pops.${MISS_POP2}_pop.allele.counts_minMAC2 | awk -F "\t" 'OFS="\t" { print $1,$2,($2 + 1) }' | sed 's/chr//g' > output/chr21.f7${SUBSP}.pops_chr21_missing.pops.${MISS_POP}_minMAC2.bed
+    
+    bedtools intersect \
+    -a output/chr21.f7${SUBSP}.pops_chr21_missing.pops.${MISS_POP}_minMAC2.bed \
+    -b  output/S07604514_Regions_no.head.bed \
+    | awk -F "\t" 'OFS="\t" { print $1,$2 }' > output/chr21.f7${SUBSP}.pops_chr21_missing.pops.${MISS_POP}_minMAC2_exonic.snps
+    
+    # Exome
+    tail -n +2 exome/output/f5${SUBSP}.pops_minInd.6or50pct_missing.pops.${MISS_POP}/f5${SUBSP}.pops.all.chrs_missing.pops.${MISS_POP}_pop.allele.counts_minMAC2 | awk -F "\t" 'OFS="\t" { print $1,$2,($2 + 1) }' | sed 's/chr//g' > output/f5${SUBSP}.pops_missing.pops.${MISS_POP}_minMAC2.bed
+    
+    bedtools intersect \
+    -a output/f5${SUBSP}.pops_missing.pops.${MISS_POP}_minMAC2.bed \
+    -b  output/S07604514_Regions_no.head.bed \
+    | awk -F "\t" 'OFS="\t" { print $1,$2 }' > output/f5${SUBSP}.pops_missing.pops.${MISS_POP}_minMAC2_exonic.snps
+  done
+
+```
+
+# Allele frequncy estimates from ANGSD
+
+```{r echo=FALSE}
+ex_snps=list()
+af=list()
+af_chr21_exonic=list()
+same_snps=list()
+
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  ex_snps[[subsp]][['chr21']]=fread(paste0("output/chr21.f7", subsp.file, ".pops_chr21_missing.pops.", miss.pop, "_minMAC2_exonic.snps"))
+  colnames(ex_snps[[subsp]][['chr21']])=c("chr", "pos")
+  ex_snps[[subsp]][['chr21']]=ex_snps[[subsp]][['chr21']][ex_snps[[subsp]][['chr21']]$chr==21,]
+  ex_snps[[subsp]][['chr21']]$chr_pos=paste(ex_snps[[subsp]][['chr21']]$chr, ex_snps[[subsp]][['chr21']]$pos, sep="_")
+  
+  ex_snps[[subsp]][['exome']]=fread(paste0("output/f5", subsp.file, ".pops_missing.pops.", miss.pop, "_minMAC2_exonic.snps"))
+  colnames(ex_snps[[subsp]][['exome']])=c("chr", "pos")
+  ex_snps[[subsp]][['exome']]=ex_snps[[subsp]][['exome']][ex_snps[[subsp]][['exome']]$chr==21,]
+  ex_snps[[subsp]][['exome']]$chr_pos=paste(ex_snps[[subsp]][['exome']]$chr, ex_snps[[subsp]][['exome']]$pos, sep="_")
+  # Allele frequencies
+  for(miss_pop in c('0', '0.3')){
+    if(miss_pop=='0'){miss_pop2='0.0'}else{miss_pop2=miss_pop}
+    if(!(subsp=='n' & miss_pop=='0.3')){
+      # Exome
+      af[['exome']][[subsp]][[miss_pop]]=fread(paste0(exome_out_dir, "f5",
+                                                      subsp.file, ".pops_minInd.6or50pct_missing.pops.",miss_pop,
+                                                      "/f5", subsp.file,".pops.all.chrs_missing.pops.",miss_pop,"_pop.allele.counts_minMAC2"))
+      colnames(af[['exome']][[subsp]][[miss_pop]])=gsub("_chr.*\\.", ".", colnames(af[['exome']][[subsp]][[miss_pop]]))
+      af[['exome']][[subsp]][[miss_pop]]$chr=as.numeric(gsub("chr", "", af[['exome']][[subsp]][[miss_pop]]$chr))
+      af[['exome']][[subsp]][[miss_pop]]$chr_pos=paste(af[['exome']][[subsp]][[miss_pop]]$chr, af[['exome']][[subsp]][[miss_pop]]$pos, sep="_")
+      
+      af_chr21_exonic[['exome']][[subsp]][[miss_pop]]=af[['exome']][[subsp]][[miss_pop]][af[['exome']][[subsp]][[miss_pop]]$chr_pos %in% ex_snps[[subsp]][['exome']]$chr_pos,]
+      af_chr21_exonic[['exome']][[subsp]][[miss_pop]]=af_chr21_exonic[['exome']][[subsp]][[miss_pop]][colnames(af_chr21_exonic[['exome']][[subsp]][[miss_pop]]) != 'chr_pos']
+      # chr21
+      af[['chr21']][[subsp]][[miss_pop]]=fread(paste0(chr21_out_dir, "chr21.f7", 
+                                                      subsp.file, ".pops_minInd.6or50pct_missing.pops.",miss_pop,
+                                                      "/chr21.f7", subsp.file, ".pops_chr21_missing.pops.",miss_pop2,"_pop.allele.counts_minMAC2"))
+      colnames(af[['chr21']][[subsp]][[miss_pop]])=gsub("_chr.*\\.", ".", colnames(af[['chr21']][[subsp]][[miss_pop]]))
+      af[['chr21']][[subsp]][[miss_pop]]$chr=as.numeric(gsub("chr", "", af[['chr21']][[subsp]][[miss_pop]]$chr))
+      af[['chr21']][[subsp]][[miss_pop]]$chr_pos=paste(af[['chr21']][[subsp]][[miss_pop]]$chr, af[['chr21']][[subsp]][[miss_pop]]$pos, sep="_")
+      
+      af_chr21_exonic[['chr21']][[subsp]][[miss_pop]]=af[['chr21']][[subsp]][[miss_pop]][af[['chr21']][[subsp]][[miss_pop]]$chr_pos %in% ex_snps[[subsp]][['chr21']]$chr_pos,]
+      af_chr21_exonic[['chr21']][[subsp]][[miss_pop]]=af_chr21_exonic[['chr21']][[subsp]][[miss_pop]][colnames(af_chr21_exonic[['chr21']][[subsp]][[miss_pop]]) != 'chr_pos']
+      
+      # Find SNPs present in both
+      same_snps[[subsp]][[miss_pop]]=af_chr21_exonic[['exome']][[subsp]][[miss_pop]][af_chr21_exonic[['exome']][[subsp]][[miss_pop]]$pos %in%
+                                                                  af_chr21_exonic[['chr21']][[subsp]][[miss_pop]]$pos, 'pos']
+      same_snps[[subsp]][[miss_pop]]=same_snps[[subsp]][[miss_pop]][order(same_snps[[subsp]][[miss_pop]])]
+
+    }
+  }
+}
+```
+
+## Same regions (chr21 exons)
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%", fig.height=3.5, fig.width=4.5, eval=FALSE}
+source("scripts/allele_frequency_tools.R")   
+for(subsp in subsps){
+  if(subsp=='n'){miss_pops='0'}else{miss_pops=c('0', '0.3')[2]}
+  for(miss_pop in miss_pops){
+    if(subsp=='all'){title=bquote("All Subspecies"~bold("exonic chr21 SNPs"))}
+    if(subsp=='ce'){title=bquote("Central-Eastern"~bold("exonic chr21 SNPs"))}
+    if(subsp=='n'){title=bquote("Nigeria-Cameroon"~bold("exonic chr21 SNPs"))}
+    if(subsp=='w'){title=bquote("Western"~bold("exonic chr21 SNPs"))}
+    #title=paste0(title, "\nUp to ",100*as.numeric(miss_pop),"% Missing Populations")
+    exome.vs.chr21.sfs.genic(af_chr21_exonic[['exome']][[subsp]][[miss_pop]], 
+                       af_chr21_exonic[['chr21']][[subsp]][[miss_pop]], 
+                       title=title,
+                       fixed.sites=F,
+                       bins=50)
+    #cat(subsp, " N SNPs\nExome:", nrow(af_chr21_exonic[['exome']][[subsp]][[miss_pop]]), "\nchr21:", nrow(af_chr21_exonic[['chr21']][[subsp]][[miss_pop]]), "\n\n")
+  }
+}
+```
+
+## Same SNPs
+
+### SFS
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%", fig.height=3.5, fig.width=4.5}
+source("scripts/allele_frequency_tools.R")   
+for(subsp in subsps){
+  if(subsp=='n'){miss_pops='0'}else{miss_pops=c('0', '0.3')[2]}
+  for(miss_pop in miss_pops){
+    if(subsp=='all'){title=bquote("All Subspecies"~bold("exonic chr21 SNPs"))}
+    if(subsp=='ce'){title=bquote("Central-Eastern"~bold("exonic chr21 SNPs"))}
+    if(subsp=='n'){title=bquote("Nigeria-Cameroon"~bold("exonic chr21 SNPs"))}
+    if(subsp=='w'){title=bquote("Western"~bold("exonic chr21 SNPs"))}
+    #title=paste0(title, "\nUp to ",100*as.numeric(miss_pop),"% Missing Populations")
+    exome.tmp=af_chr21_exonic[['exome']][[subsp]][[miss_pop]][af_chr21_exonic[['exome']][[subsp]][[miss_pop]]$pos %in% same_snps[[subsp]][[miss_pop]],]
+    chr21.tmp=af_chr21_exonic[['chr21']][[subsp]][[miss_pop]][af_chr21_exonic[['chr21']][[subsp]][[miss_pop]]$pos %in% same_snps[[subsp]][[miss_pop]],]
+    exome.vs.chr21.sfs.genic(exome.tmp, 
+                       chr21.tmp, 
+                       title=title,
+                       fixed.sites=F,
+                       bins=50)
+    #cat(subsp, " N SNPs\nExome:", nrow(exome.tmp), "\nchr21:", nrow(chr21.tmp), "\n\n")
+  }
+}
+```
+
+### Exome capture vs chr21 capture AF estimates
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%", fig.height=3.5, fig.width=4.25}
+rm_zero=FALSE
+density=TRUE
+line=FALSE
+
+for(subsp in subsps){
+  if(subsp=="n"){miss_pop="0"}else{miss_pop='0.3'}
+  # Select SNPs in both exome and chr21 capture data
+  exome.ac=af_chr21_exonic[['exome']][[subsp]][[miss_pop]][af_chr21_exonic[['exome']][[subsp]][[miss_pop]]$pos %in% same_snps[[subsp]][[miss_pop]],]
+  exome.ac=exome.ac[order(exome.ac$pos),]
+  rownames(exome.ac)=exome.ac$pos
+  chr21.ac=af_chr21_exonic[['chr21']][[subsp]][[miss_pop]][af_chr21_exonic[['chr21']][[subsp]][[miss_pop]]$pos %in% same_snps[[subsp]][[miss_pop]],]
+  chr21.ac=chr21.ac[order(chr21.ac$pos),]
+  rownames(chr21.ac)=chr21.ac$pos
+  
+  # Calculate DAF
+  ## chr21
+  chr21.dac=chr21.ac[, grepl(".dac$", names(chr21.ac))]
+  chr21.aac=chr21.ac[, grepl(".aac$", names(chr21.ac))]
+  ### Total
+  chr21.total.dac=rowSums(chr21.dac)
+  chr21.total.aac=rowSums(chr21.aac)
+  chr21.total.daf=chr21.total.dac/(chr21.total.dac+chr21.total.aac)
+  ### Per pop
+  chr21.daf=as.matrix(chr21.dac)/(as.matrix(chr21.dac)+as.matrix(chr21.aac))
+  chr21.daf[is.infinite(chr21.daf)]=NA
+  chr21.daf=as.data.frame(chr21.daf)
+  chr21.daf$chr=21
+  chr21.daf$pos=chr21.ac$pos
+  chr21.daf=melt(chr21.daf, id.vars=c("chr", "pos"))
+  colnames(chr21.daf)=c("chr", "pos", "Population", "chr21")
+  ## exome
+  exome.dac=exome.ac[, grepl(".dac$", names(exome.ac))]
+  exome.aac=exome.ac[, grepl(".aac$", names(exome.ac))]
+  ### Total
+  exome.total.dac=rowSums(exome.dac)
+  exome.total.aac=rowSums(exome.aac)
+  exome.total.daf=exome.total.dac/(exome.total.dac+exome.total.aac)
+  ### Per pop
+  exome.daf=as.matrix(exome.dac)/(as.matrix(exome.dac)+as.matrix(exome.aac))
+  exome.daf[is.infinite(exome.daf)]=NA
+  exome.daf=as.data.frame(exome.daf)
+  exome.daf$chr=21
+  exome.daf$pos=exome.ac$pos
+  exome.daf=melt(exome.daf, id.vars=c("chr", "pos"))
+  colnames(exome.daf)=c("chr", "pos", "Population", "Exome")
+  # Total AF estimates
+  plot_df=data.frame("chr"=rep(21, length(exome.total.daf)), "pos"=same_snps[[subsp]][[miss_pop]],
+                     "Exome"=exome.total.daf,
+                     "chr21"=chr21.total.daf)
+  if(rm_zero){
+    plot_df=plot_df[plot_df$DAF!=0,]
+  }
+  n_snps=nrow(plot_df)
+  total_plot=ggplot(plot_df, aes(x=Exome, y=chr21)) + 
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5),
+          panel.background = element_rect(fill = 'cadetblue3')) +
+    geom_bin2d(bins = 50) +
+    scale_fill_gradientn(name="Count", colours = plasma(100), trans = "log", label = function(x) sprintf("%.0f", x))+
+    #scale_fill_gradientn(colours = rev(rainbow(5)))+
+    #geom_smooth(method='lm', se = FALSE, col="white") +
+    geom_abline(slope=1, intercept=0, linetype = "dashed") +
+    labs(title=paste0(subsp_names[[subsp]], ": Total DAF")) +
+    annotate("text", label = paste0("N SNPs: ", n_snps), x=0, y=0.975, fontface=2, hjust=0) +
+    #annotate("text", -Inf, Inf, label = "x=y", x=1.1, y=1.1) +
+    annotate("text", label = paste0("r = ", round(cor(plot_df$Exome, plot_df$chr21, method="pearson"), 2)), x=0, y=0.875, fontface=2, hjust=0) +
+    coord_cartesian(xlim = c(0,1), ylim=c(0,1), # This focuses the x-axis on the range of interest
+                      clip = 'off')
+  print(total_plot)
+  
+  # Population AF estimates
+  pop.daf=merge(exome.daf, chr21.daf, by=c("chr", "pos", "Population"))
+  ## Remove rows with NA
+  pop.daf=pop.daf[complete.cases(pop.daf),]
+  ## Format populaytion names
+  pop.daf$Population=gsub("^c_|^e_|^n_|^w_|\\.dac$", "", pop.daf$Population)
+  if(rm_zero){
+    pop.daf=pop.daf[!(pop.daf$Exome==0 & pop.daf$chr21==0),]
+  }
+  ## Plot together
+  pop.daf_plot=ggplot(pop.daf, aes(x=Exome, y=chr21)) + 
+    theme_bw() +
+    labs(title=paste0(subsp_names[[subsp]], ": DAF per Population")) +
+    annotate("text", label = paste0("N SNPs: ", n_snps), x=0, y=0.975, fontface=2, hjust=0) +
+    #annotate("text", -Inf, Inf, label = "x=y", x=1.1, y=1.1) +
+    coord_cartesian(xlim = c(0,1), ylim=c(0,1), # This focuses the x-axis on the range of interest
+                      clip = 'off') 
+  
+  if(density){
+    print(pop.daf_plot+
+            geom_bin2d(bins = 50) +
+            #geom_smooth(method='lm', se = FALSE, col="white")+
+            scale_fill_gradientn(name="Count", colours = plasma(100), trans = "log", label = function(x) sprintf("%.0f", x)) +
+            theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5),
+              panel.background = element_rect(fill = 'cadetblue3'))+
+            geom_abline(slope=1, intercept=0, linetype = "dashed")+
+            annotate("text", label = paste0("r = ", round(cor(pop.daf$Exome, pop.daf$chr21, method="pearson"), 2)), x=0, y=0.875, fontface=2, hjust=0))
+  }
+  if(line){
+    print(pop.daf_plot+
+            geom_smooth(method='lm', se = FALSE, aes(col=Population))+
+            theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5),
+              panel.background = element_rect(fill = 'white'),
+              legend.key.size = unit(1, 'mm'), #change legend key size
+              legend.key.height = unit(1, 'mm'), #change legend key height
+              legend.key.width = unit(5, 'mm'),
+              legend.title=element_text(size=8), legend.text=element_text(size=6.5))+
+            geom_abline(slope=1, intercept=0, linetype = "dashed")+
+            guides(col=guide_legend(ncol=1)))
+  }
+}
+```
+
+The line of best fit does have a slope slightly less than 1.
+
+### Difference
+
+```{r echo=FALSE, eval=FALSE, fig.height=3.5, fig.width=5, message=FALSE, warning=FALSE, include=FALSE, out.width="33%"}
+rm_zero=FALSE
+for(subsp in subsps){
+  if(subsp=="n"){miss_pop="0"}else{miss_pop='0.3'}
+  title="DAF difference"
+  subtitle=subsp_names[[subsp]]
+  binwidth=0.025
+  alpha=0.1
+  # Select SNPs in both exome and chr21 capture data
+  exome.ac=af_chr21_exonic[['exome']][[subsp]][[miss_pop]][af_chr21_exonic[['exome']][[subsp]][[miss_pop]]$pos %in% same_snps[[subsp]][[miss_pop]],]
+  exome.ac=exome.ac[order(exome.ac$pos),]
+  rownames(exome.ac)=same_snps[[subsp]][[miss_pop]]
+  chr21.ac=af_chr21_exonic[['chr21']][[subsp]][[miss_pop]][af_chr21_exonic[['chr21']][[subsp]][[miss_pop]]$pos %in% same_snps[[subsp]][[miss_pop]],]
+  chr21.ac=chr21.ac[order(chr21.ac$pos),]
+  rownames(chr21.ac)=same_snps[[subsp]][[miss_pop]]
+  
+  # Calculate DAF
+  ## chr21
+  chr21.dac=chr21.ac[, grepl(".dac$", names(chr21.ac))]
+  chr21.aac=chr21.ac[, grepl(".aac$", names(chr21.ac))]
+  chr21.total.dac=rowSums(chr21.dac)
+  chr21.total.aac=rowSums(chr21.aac)
+  chr21.total.daf=chr21.total.dac/(chr21.total.dac+chr21.total.aac)
+  ## exome
+  exome.dac=exome.ac[, grepl(".dac$", names(exome.ac))]
+  exome.aac=exome.ac[, grepl(".aac$", names(exome.ac))]
+  exome.total.dac=rowSums(exome.dac)
+  exome.total.aac=rowSums(exome.aac)
+  exome.total.daf=exome.total.dac/(exome.total.dac+exome.total.aac)
+  
+  # Difference in total AF estimates
+  plot_df=data.frame("chr"=rep(21, length(same_snps[[subsp]][[miss_pop]])), "pos"=same_snps[[subsp]][[miss_pop]], "DAF_diff"=exome.total.daf-chr21.total.daf)
+  if(rm_zero){
+    plot_df=plot_df[plot_df$DAF_diff!=0,]
+  }
+  n_snps=nrow(plot_df)
+  total_plot=ggplot(plot_df, aes(x=DAF_diff, y=..density..)) + 
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5)) +
+    #geom_histogram(alpha=alpha, binwidth=binwidth, size=0) +
+    stat_bin(geom="step", binwidth=binwidth, position=position_nudge(x=-0.5*binwidth)) +
+    geom_point(aes(y=0), shape=3) +
+    labs(title="Total DAF Difference", subtitle=subtitle, x="DAF Difference (exome - chr21)", y="Density") +
+    annotate("text", -Inf, Inf, label = paste0("N SNPs: ", n_snps,
+                                               "\n\nMean diff: ", signif(mean(plot_df$DAF_diff),2),
+                                               "\nMedian diff: ", signif(median(plot_df$DAF_diff),2),
+                                               "\n\nMean absolute diff: ", signif(mean(abs(plot_df$DAF_diff)),2),
+                                               "\nMedian absolute diff: ", signif(median(abs(plot_df$DAF_diff)),2)), hjust = -0.1, vjust = 1) 
+  print(total_plot)
+  
+  # Difference in population AF estimates
+  chr21.daf=as.matrix(chr21.dac)/(as.matrix(chr21.dac)+as.matrix(chr21.aac))
+  chr21.daf[is.infinite(chr21.daf)]=NA
+  exome.daf=as.matrix(exome.dac)/(as.matrix(exome.dac)+as.matrix(exome.aac))
+  exome.daf[is.infinite(exome.daf)]=NA
+  
+  daf.diff=as.data.frame(exome.daf-chr21.daf)
+  daf.diff$chr=21
+  daf.diff$pos=rownames(daf.diff)
+  
+  daf.diff=melt(daf.diff, id.vars=c("chr", "pos"))
+  colnames(daf.diff)=c('chr', 'pos', 'Population', 'DAF_diff')
+  daf.diff$Population=gsub("^c_|^e_|^n_|^w_|.dac$", "", daf.diff$Population)
+  if(rm_zero){
+    daf.diff=daf.diff[daf.diff$DAF_diff!=0,]
+  }
+  ## Plot together
+  total_pop_plot=ggplot(daf.diff, aes(x=DAF_diff, y=..density..)) + 
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5)) +
+    #geom_histogram(alpha=alpha, binwidth=binwidth, size=0) +
+    stat_bin(geom="step", binwidth=binwidth, position=position_nudge(x=-0.5*binwidth), col="purple") +
+    geom_point(aes(y=0), shape=3, col="purple") +
+    labs(title="DAF Difference per Population", subtitle=subtitle, x="DAF Difference (exome - chr21)", y="Density") +
+    annotate("text", -Inf, Inf, label = paste0("N SNPs: ", n_snps,
+                                               "\n\nMean diff: ", signif(mean(daf.diff$DAF_diff),2),
+                                               "\nMedian diff: ", signif(median(daf.diff$DAF_diff),2),
+                                               "\n\nMean absolute diff: ", signif(mean(abs(daf.diff$DAF_diff)),2),
+                                               "\nMedian absolute diff: ", signif(median(abs(daf.diff$DAF_diff)),2)), hjust = -0.1, vjust = 1) 
+  print(total_pop_plot)
+  
+  ## Plot per pop
+  per_pop_plot=ggplot(daf.diff, aes(x=DAF_diff, y=..density.., group=Population, col=Population)) + 
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5)) +
+    #geom_histogram(alpha=alpha, binwidth=binwidth, size=0) +
+    stat_bin(geom="step", binwidth=binwidth, position=position_nudge(x=-0.5*binwidth)) +
+    geom_point(aes(y=0), shape=3) +
+    labs(title="DAF Difference per Population", subtitle=subtitle, x="DAF Difference (exome - chr21)", y="Density") 
+  print(per_pop_plot)
+}
+```
+
+# Coverage
+
+```{r echo=FALSE,}
+coverage=list()
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  ## Exome with FPR data
+  coverage[['exome']][[subsp]]=fread(paste0(exome_out_dir, "f5", 
+                                       subsp.file, ".pops_minInd.6or50pct_missing.pops.", miss.pop, "/f5", 
+                                       subsp.file, ".pops.all.chrs_missing.pops.", miss.pop, "_minMAC2_coverage"))
+  coverage[['exome']][[subsp]]=coverage[['exome']][[subsp]][coverage[['exome']][[subsp]]$chr=='chr21',]
+  ## Chr21
+  coverage[['chr21']][[subsp]]=fread(paste0(chr21_out_dir, "chr21.f7", 
+                                       subsp.file, ".pops_minInd.6or50pct_missing.pops.", miss.pop, "/chr21.f7", 
+                                       subsp.file, ".pops_chr21_missing.pops.", miss.pop, "_pop_minMAC2_coverage"))
+  coverage[['chr21']][[subsp]]=coverage[['chr21']][[subsp]][coverage[['chr21']][[subsp]]$chr=='chr21',]
+}
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%", fig.height=3.5, fig.width=4.25}
+density=TRUE
+line=FALSE
+
+for(subsp in subsps){
+  if(subsp=="n"){miss_pop="0"}else{miss_pop='0.3'}
+  # Select SNPs in both exome and chr21 capture data
+  exome.cov=coverage[['exome']][[subsp]][coverage[['exome']][[subsp]]$pos %in% same_snps[[subsp]][[miss_pop]],]
+  exome.cov=exome.cov[order(exome.cov$pos),]
+  rownames(exome.cov)=exome.cov$pos
+  chr21.cov=coverage[['chr21']][[subsp]][coverage[['chr21']][[subsp]]$pos %in% same_snps[[subsp]][[miss_pop]],]
+  chr21.cov=chr21.cov[order(chr21.cov$pos),]
+  rownames(chr21.cov)=chr21.cov$pos
+  
+  # Calculate DAF
+  ## chr21
+  ### Total
+  chr21.total.cov=rowSums(chr21.cov[!(colnames(chr21.cov) %in% c('chr', 'pos'))], na.rm=TRUE)
+  ### Per pop
+  chr21.pop.cov=melt(chr21.cov, id.vars=c("chr", "pos"))
+  colnames(chr21.pop.cov)=c("chr", "pos", "Population", "chr21")
+  ## exome
+  ### Total
+  exome.total.cov=rowSums(exome.cov[!(colnames(exome.cov) %in% c('chr', 'pos'))], na.rm=TRUE)
+  ### Per pop
+  exome.pop.cov=melt(exome.cov, id.vars=c("chr", "pos"))
+  colnames(exome.pop.cov)=c("chr", "pos", "Population", "Exome")
+  # Total AF estimates
+  plot_df=data.frame("chr"=rep(21, nrow(exome.cov)), "pos"=exome.cov$pos,
+                     "Exome"=exome.total.cov,
+                     "chr21"=chr21.total.cov)
+  n_snps=nrow(plot_df)
+  max=max(c(plot_df$Exome, plot_df$chr21))
+  total_plot=ggplot(plot_df, aes(x=Exome, y=chr21)) + 
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5),
+          panel.background = element_rect(fill = 'cadetblue3')) +
+    geom_bin2d(bins = 50) +
+    scale_fill_gradientn(name="Count", colours = plasma(100), trans = "log", label = function(x) sprintf("%.0f", x))+
+    #scale_fill_gradientn(colours = rev(rainbow(5)))+
+    #geom_smooth(method='lm', se = FALSE, col="white") +
+    geom_abline(slope=1, intercept=0, linetype = "dashed") +
+    labs(title=paste0(subsp_names[[subsp]], ": Total Coverage")) +
+    annotate("text", -Inf, Inf, label = paste0("N SNPs: ", n_snps), x=0, y=0.975*max, fontface=2, hjust=0) +
+    #annotate("text", -Inf, Inf, label = "x=y", x = max*1.1, y = max*1.1) +
+    annotate("text", -Inf, Inf, label = paste0("r = ", round(cor(plot_df$Exome, plot_df$chr21, method="pearson"), 2)), x=0, y=0.875*max, fontface=2, hjust=0) +
+    coord_cartesian(xlim = c(0, max), ylim=c(0,max), 
+                      clip = 'off')
+  print(total_plot)
+  
+  # Population AF estimates
+  pop.cov=merge(exome.pop.cov, chr21.pop.cov, by=c("chr", "pos", "Population"))
+  pop.cov[is.na(pop.cov$Exome), "Exome"]=0
+  pop.cov[is.na(pop.cov$chr21), "chr21"]=0
+  ## Format populaytion names
+  pop.cov$Population=gsub("^c_|^e_|^n_|^w_|_coverage$", "", pop.cov$Population)
+  ## Plot together
+  max=max(c(pop.cov$Exome, pop.cov$chr21))
+  pop.daf_plot=ggplot(pop.cov, aes(x=Exome, y=chr21)) + 
+    theme_bw() +
+    labs(title=paste0(subsp_names[[subsp]], ": Coverage per Population")) +
+    annotate("text", label = paste0("N SNPs: ", n_snps), x=0, y=0.975*max, fontface=2, hjust=0) +
+    #annotate("text", -Inf, Inf, label = "x=y", x = max*1.1, y = max*1.1,) +
+    coord_cartesian(xlim = c(0, max), ylim=c(0,max), 
+                      clip = 'off')
+  
+  if(density){
+    print(pop.daf_plot+
+            geom_bin2d(bins = 50) +
+            #geom_smooth(method='lm', se = FALSE, col="white")+
+            scale_fill_gradientn(name="Count", colours = plasma(100), trans = "log", label = function(x) sprintf("%.0f", x)) +
+            theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5),
+              panel.background = element_rect(fill = 'cadetblue3'))+
+            geom_abline(slope=1, intercept=0, linetype = "dashed")+
+            annotate("text", label = paste0("r = ", round(cor(pop.cov$Exome, pop.cov$chr21, method="pearson"), 2)), x=0, y=0.875*max, fontface=2, hjust=0))
+  }
+  if(line){
+    print(pop.daf_plot+
+            geom_smooth(method='lm', se = FALSE, aes(col=Population))+
+            theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5),
+              panel.background = element_rect(fill = 'white'),
+              legend.key.size = unit(1, 'mm'), #change legend key size
+              legend.key.height = unit(1, 'mm'), #change legend key height
+              legend.key.width = unit(5, 'mm'),
+              legend.title=element_text(size=8), legend.text=element_text(size=6.5))+
+            geom_abline(slope=1, intercept=0, linetype = "dashed")+
+            guides(col=guide_legend(ncol=1)))
+  }
+}
+```

@@ -1,0 +1,731 @@
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_aux/') 
+```
+
+#### Parameters
+
+```{r}
+subsps=c('all','ce', 'w')
+env_data='f_over_sum_known_trees'
+habitat_col='black'
+col_scale=colorRampPalette(c('goldenrod1', 'khaki4', 'darkgreen'))(100)
+#fprs=c(0.005, 0.001, 0.0005, 0.0001, 0.00005)
+fprs=c(0.005, 0.001, 0.0005)
+fprs.pct=paste0(fprs*100,"pct")
+stats=c("raw_AF", "M_P")
+```
+
+---
+title: "`r paste0("BayPass AUX Allele Frequencies - ", env_data)`"
+subtitle: "`r paste0("Subspecies datasets: ", paste(subsps, collapse = ", "))`"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+FPRs were assigned in `r paste0("./baypass_aux/scripts/", env_data, "/", env_data,".baypass_aux_candidate.Rmd")`. Here I investigate the allele frequency patterns at candidate SNPs to verify that BayPass is accounting for population structure and identifing SNPs correlated with habitat. I also want to gain insights into the nature of these signals, e.g. the magnitude of allele frequency differences.
+
+#### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(dplyr)
+library(tidyverse)
+source("../scripts/baypass_tools.R")
+source("scripts/baypass_aux_tools.R")
+source("../baypass_core/scripts/distribution_of_candidates_in_the_genome_tools-cov_cor.R")
+source("../baypass_core/scripts/candidate_allele_frequency_patterns.R")
+
+env_dir="../../../environmental_data/output/"
+formatted_aux_out_dir="output/formatted_baypass_aux_output/"
+formatted_aux_out_fprs_dir="output/baypass_aux_output_with_fprs/"
+exome_ac_dir="../../../allele_frequencies/exome/output/"
+```
+
+#### Read in data
+
+```{r echo=FALSE}
+## Environmental data file
+env_file=read.csv(paste0(env_dir, "/meta_data.env.pops.imputed.csv"))
+
+# Subspecies specific files
+allele.freq=list()
+allele.freq.cand=list()
+subsp.col=list()
+betai_fpr=list()
+cov.in=list()
+daf=list()
+
+for(subsp in subsps){
+  cat("-", subsp, "\n")
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  ## Allele count
+  ac=fread(paste0(exome_ac_dir,"/f5", subsp.file ,".pops_minInd.6or50pct_missing.pops.",miss.pop,"/f5", 
+                                      subsp.file ,".pops.all.chrs_missing.pops.",miss.pop,"_pop.allele.counts_minMAC2"))
+  ac$chr_pos=paste(gsub('chr', '', ac$chr), ac$pos, sep="_")
+  rownames(ac)=ac$chr_pos
+  ### Calculate DAF
+  dac=ac[, grepl(".dac$", names(ac))]
+  aac=ac[, grepl(".aac$", names(ac))]
+  daf[[subsp]]=dac/(dac+aac)
+  colnames(daf[[subsp]])=gsub("_chr1.dac", "", colnames(daf[[subsp]]))
+  colnames(daf[[subsp]])=gsub("_", ".", colnames(daf[[subsp]]))
+  daf[[subsp]]$chr_pos=rownames(daf[[subsp]])
+  ### Wide to long
+  daf[[subsp]]=daf[[subsp]] %>%
+    pivot_longer(
+      cols = -chr_pos,     # All columns but 'chr_pos'
+      names_to = "Population",              # Name for the new column containing the original column names
+      values_to = "raw_AF"             # Name for the new column containing the values
+    )
+  ## Allele frequencies
+  allele.freq[[subsp]]=fread(paste0("../baypass_core/output/formatted_baypass_core_output/f5", subsp.file,
+          ".pops_missing.pops.", miss.pop,"_minMAC2_summary_pij.out_pop.info"), select=c('MRK', 'chr', 'pos', 'Population', 'M_P', 'M_Pstd'))
+  allele.freq[[subsp]]$chr_pos=paste(allele.freq[[subsp]]$chr, allele.freq[[subsp]]$pos, sep="_")
+  
+  ### Add raw allele frequencies ? - takes ages
+  #allele.freq[[subsp]]=merge(allele.freq[[subsp]], daf[[subsp]], by=c('chr_pos', 'Population'), all.x=T)
+  #allele.freq[[subsp]]$raw_AF[allele.freq[[subsp]]$raw_AF=='NaN']=NA
+  ### Population names
+  pops=unique(allele.freq[[subsp]]$Population)
+  pops=pops[order(pops)]
+  #### Population colours (according to subspecies)
+  subsp.col[[subsp]]=c()
+  for(pop in pops){
+    if(startsWith(pop, "c.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "green3")}
+    if(startsWith(pop, "e.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "darkorange")}
+    if(startsWith(pop, "n.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "red")}
+    if(startsWith(pop, "w.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "blue")}
+  }
+  ## Read BayPass AUX output
+  ### Annotated Betai
+  ann=unique(fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, "_summary_betai.out_row.per.gtf.annot_5000bp.flanks_all_runs.gz"),
+                         select=c('chr', 'pos', 'gene')))
+  ann[ann$gene=='.','gene']=NA
+  ### FPR data
+  betai_fpr[[subsp]]=unique(fread(paste0(formatted_aux_out_fprs_dir, "/f5", subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", 
+                                         env_data, "_summary_betai.out_all_runs.fpr.non-genic_1000bp.flanks")))
+  betai_fpr[[subsp]]=merge(betai_fpr[[subsp]], ann, by=c('chr', 'pos'), all.x=TRUE)
+  betai_fpr[[subsp]]$chr_pos=paste(betai_fpr[[subsp]]$chr, betai_fpr[[subsp]]$pos, sep="_")
+  ann=NULL
+  ## Cov file
+  cov.in[[subsp]][['Real']]=fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, "_covariate.std"))
+  
+  covs=unique(betai_fpr[[1]]$COVARIABLE_name)
+  
+  ### Add covariable names as row names (alphabetical order)
+  names(habitat_col)=covs[order(covs)]
+  rownames(cov.in[[subsp]][['Real']])=covs[order(covs)]
+  ### Add population names as column names (alphabetical order)
+  colnames(cov.in[[subsp]][['Real']])=pops
+  
+  
+  ### Add raw allele frequencies - this takes ages so I just do it to allele.freq[[subsp]] already filtered for candidates
+  allele.freq.cand[[subsp]]=allele.freq[[subsp]][allele.freq[[subsp]]$chr_pos %in% betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<=max(fprs), 'chr_pos'],]
+  allele.freq.cand[[subsp]]=merge(allele.freq.cand[[subsp]], daf[[subsp]], by=c('chr_pos', 'Population'), all.x=T)
+  allele.freq.cand[[subsp]]$raw_AF[allele.freq.cand[[subsp]]$raw_AF=='NaN']=NA
+  allele.freq.cand[[subsp]]$raw_AF=as.numeric(allele.freq.cand[[subsp]]$raw_AF)
+  
+}
+
+subsp_name=list()
+subsp_name[['all']]="All"
+subsp_name[['ce']]="Central-Eastern"
+subsp_name[['n']]="Nigeria-Cameroon"
+subsp_name[['w']]="Western"
+
+stat_name=list()
+stat_name[['M_P']]="Unstandardised Allele Frequencies"
+stat_name[['M_Pstd']]="Standardised Allele Frequencies"
+
+tail_name=list()
+tail_name[['0.5pct']]='0.5% Tail'
+tail_name[['0.1pct']]='0.1% Tail'
+tail_name[['0.05pct']]='0.05% Tail'
+tail_name[['100pct']]='All SNPS'
+
+gene_cards=fread("../../../genomic_data/gene_cards/GeneFuncDescription.csv")
+gene_cards$symbol=toupper(gene_cards$symbol)
+covs=unique(betai_fpr[[1]]$COVARIABLE_name)
+```
+
+# Allele Frequencies vs Environmnetal Variables
+
+## Real env
+
+### Correlation test per SNP
+
+```{r out.width="50%", fig.width=5, fig.height=3.5}
+max_n=1000
+cor.res=data.frame(Subspecies=character(), FPR=character(), Direction=character(), Stat=character(), r=numeric(), p=numeric())
+
+cor_test=function(df, stat){
+  data.frame(cor.test(df[[stat]], df$forest_tree_pct, method="pearson")[c("estimate","p.value")])
+}
+
+for(subsp in subsps){
+  ### Add covs to AF data frame
+  cov.in.format=data.frame(Population=names(cov.in[[subsp]][['Real']]), forest_tree_pct=unlist(cov.in[[subsp]][['Real']]))
+  for(fpr in c(fprs)){
+    for(dir in c('Positive', 'Negative')){
+      set.seed(123)
+      if(dir=='Positive'){betai_cand.tmp=betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<fpr & betai_fpr[[subsp]]$M_Beta.median>=0,]}
+      if(dir=='Negative'){betai_cand.tmp=betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<fpr & betai_fpr[[subsp]]$M_Beta.median<=0,]}
+      if(nrow(betai_cand.tmp)>max_n){betai_cand.tmp=betai_cand.tmp[sample(nrow(betai_cand.tmp), max_n),]}
+      allele.freq.tmp=allele.freq.cand[[subsp]][allele.freq.cand[[subsp]]$chr_pos %in% betai_cand.tmp$chr_pos,]
+      allele.freq.tmp=merge(allele.freq.tmp, cov.in.format, by="Population")
+      for(stat in stats){
+        cor.res.tmp=allele.freq.tmp %>% 
+          group_by(chr_pos) %>% do(cor_test(., stat=stat))
+        
+        cor.res=rbind(cor.res, data.frame(Subspecies=subsp_name[[subsp]], FPR=paste0(100*fpr,"%"), Direction=dir, Stat=stat, r=cor.res.tmp$estimate, p=cor.res.tmp$p.value))
+      }
+    }
+  }
+}
+cor.res$FPR=factor(cor.res$FPR, levels=rev(unique(cor.res$FPR)[order(unique(cor.res$FPR))]))
+
+stat_names=c("M_P"="Unstandardised allele frequencies", "M_Pstd"="Standardised allele frequencies", "raw_AF"="Raw allele frequencies")
+cor_stat_names=c('r'="Pearson's r", 'p'="Pearson's r p-value")
+for(stat in stats){
+  for(cor_stat in c('r', 'p')){
+    plot=ggplot(cor.res[cor.res$Stat==stat,], aes_string(x='FPR', y=cor_stat, fill='Direction', col='Direction'))+
+      theme_bw() +
+      theme(plot.title = element_text(hjust = 0.5), 
+            #plot.subtitle = element_text(hjust = 0.5), 
+            legend.position = "none",
+            strip.text = element_text(face = "italic"),
+            strip.background =element_rect(fill="white")) +
+      labs(title=stat_names[[stat]],
+           #subtitle=stat_names[[stat]],
+           x="FPR tail",
+           y=cor_stat_names[[cor_stat]]) +
+      geom_boxplot(outlier.shape = 1) +
+      facet_grid(. ~Subspecies, space='free') +
+      scale_discrete_manual(aesthetics = c("fill"), values = c('Positive' = 'deepskyblue', 'Negative'='red')) +
+      scale_discrete_manual(aesthetics = c("colour"), values = c('Positive' = 'deepskyblue4', 'Negative'='darkred'))
+    if(cor_stat=="r"){
+      plot=plot+
+        geom_hline(yintercept=0)+
+        ylim(-1,1)
+    }
+    if(cor_stat=="p"){
+      plot=plot+
+        ylim(0,1)
+    }
+    print(plot)
+  }
+}
+```
+
+### All candidates together 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", fig.height=4.5, fig.width=4.5}
+run_env_vs_AF.v4(betai_fpr, cov.in, allele.freq.cand, stats=stats, fprs=fprs, legend=FALSE)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", fig.height=4.5, fig.width=4.5, eval=FALSE}
+max_n=1000
+
+#run_env_vs_AF.v4(betai_fpr.rand, cov.in, allele.freq, stats=c("M_P", "M_Pstd"), fprs=fprs, legend=FALSE)
+
+title=''
+cor_method='pearson'
+env_column='f_over_sum_known_trees'
+cov_name='f_over_sum_known_trees'
+colour_column='subsp_col'
+pop_colour_column=colour_column
+for(stat in stats){
+  for(subsp in subsps){
+    #cat("-", subsp, "\n")
+    if(subsp=="all"){subsp_name="All subspecies"}
+    if(subsp=="ce"){subsp_name="Central-Eastern"}
+    if(subsp=="n"){subsp_name="Nigeria-Cameroon"}
+    if(subsp=="w"){subsp_name="Western"}
+    pop_cov=data.frame(t(cov.in[[subsp]][['Real']]))
+    pop_cov$Population=rownames(pop_cov)
+    pop_cov=pop_cov[order(pop_cov$Population),]
+    pops=unique(pop_cov$Population)
+    pops=pops[order(pops)]
+    pop_cov$subsp_col=NA
+    for(pop in pop_cov$Population){
+      if(startsWith(pop, "c.")){pop_cov[pop_cov$Population == pop, 'subsp_col']="green3"}
+      if(startsWith(pop, "e.")){pop_cov[pop_cov$Population == pop, 'subsp_col']="darkorange"}
+      if(startsWith(pop, "n.")){pop_cov[pop_cov$Population == pop, 'subsp_col']="red"}
+      if(startsWith(pop, "w.")){pop_cov[pop_cov$Population == pop, 'subsp_col']="blue"}
+    }
+    snps=unique(allele.freq[[subsp]]$chr_pos)
+    snps=snps[sample(length(snps), max_n)]
+    allele.freq.select=allele.freq[[subsp]][allele.freq[[subsp]]$chr_pos %in% snps,]
+    betai.select=betai_fpr[[subsp]]
+    # Add covariable information
+    allele.freq.select=merge(allele.freq.select, pop_cov, by='Population')
+    # Add Beta values
+    # Get correlation coefficient
+    cor_res=cor.test(allele.freq.select[[env_column]], 
+                         allele.freq.select[[stat]], 
+                         method=cor_method)
+    subtitle=paste0("r=", signif(cor_res$estimate,2), ", p=",signif(cor_res$p.value,2),"; ")
+    
+    # Plot
+    n_cand=length(unique(allele.freq.select$chr_pos))
+    cand_plot=ggplot(allele.freq.select, aes_string(x=env_column, y=stat)) +
+      theme_bw() +
+      theme(plot.title = element_text(hjust = 0.5, size=16), 
+            #plot.subtitle = element_text(hjust = 0.5, size=13),
+            panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+      labs(title=paste0(subsp_name, " (", n_cand, " random SNPs)"), 
+           #subtitle=paste0(subtitle),
+           y=paste0(stat_name),
+           x='Forest-tree-percentage')+
+      geom_line(aes(group=chr_pos), alpha=min(0.5, 150/n_cand), col='grey50') +
+      guides(colour = guide_legend(override.aes = list(alpha=1))) +
+        geom_smooth(method = 'loess', se=F, size=2, col='black') +
+        geom_smooth(method = 'loess', se=F, size=1, col='white')
+    # If we are adding the position of populations
+      pop_cov_top=pop_cov[seq(2, length(pop_cov$Population), 2),]
+      pop_cov_bottom=pop_cov[seq(1, length(pop_cov$Population), 2),]
+        cand_plot=cand_plot + 
+          scale_x_continuous(breaks = pop_cov_bottom[[env_column]], labels = pop_cov_bottom$Population, 
+                             sec.axis = sec_axis(~ ., breaks = pop_cov_top[[env_column]], labels = pop_cov_top$Population))+
+          #theme(axis.text.x.top = element_text(angle = 315, vjust = 0, hjust=1, size=7, color = rainbow(nrow(pop_cov_top))),
+          #      axis.text.x.bottom = element_text(angle = 45, vjust = 1, hjust=1, size=7, color = rainbow(nrow(pop_cov_bottom))))
+          theme(axis.text.x.top = element_text(angle = 315, vjust = 0, hjust=1, size=9, color = pop_cov_top[[pop_colour_column]]),
+                axis.text.x.bottom = element_text(angle = 45, vjust = 1, hjust=1, size=9, color = pop_cov_bottom[[pop_colour_column]],)) + 
+          geom_vline(xintercept = pop_cov[[env_column]], col=pop_cov[[pop_colour_column]], linetype='solid', alpha=0.3, size=0.3)
+
+    ## If dealing with raw allele frequencies, set y limits to 0,1 (with some wiggle room so smoothed lines dont dissapear below 0 or above 1)
+    if(stat=="M_P"){
+      cand_plot=cand_plot + 
+        scale_y_continuous(breaks=c(0, 0.25, 0.5, 0.75, 1)) +
+        coord_cartesian(ylim=c(0,1))
+    }
+    ## Print plot
+    print(cand_plot)
+  }
+}
+```
+
+## Rank env
+
+Here I plot the rank order of the environmental variables instead of the real values.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", eval=FALSE}
+betai_fpr.rank=list()
+cov.in.rank=list()
+for(subsp in subsps){
+  rows=list()
+  for(i in 1:nrow(cov.in[[subsp]][['Real']])){
+    rows[[i]]=data.frame(t(rank(cov.in[[subsp]][['Real']][i,])))
+  }
+  cov.in.rank[[subsp]][['Real']]=do.call("rbind", rows)
+  rownames(cov.in.rank[[subsp]][['Real']])=paste0(rownames(cov.in[[subsp]][['Real']]), "_rank")
+  betai_fpr.rank[[subsp]]=betai_fpr[[subsp]]
+  betai_fpr.rank[[subsp]]$COVARIABLE_name=paste0(betai_fpr.rank[[subsp]]$COVARIABLE_name, "_rank")
+}
+run_env_vs_AF.v4(betai_fpr.rank, cov.in.rank, allele.freq.cand, stats=stats, fprs=fprs)
+```
+
+## All subspecies candidates plotted by subspecies
+
+I do this to see if we still see correlations within the subspecies. If we do not this may indicate that subspecies differences are driving these candidates rather than consistent patters across subspecies.
+
+```{r message=FALSE, warning=FALSE, out.width="33%", eval=FALSE}
+source("scripts/baypass_aux_tools.R")
+allele.freq.tmp=list()
+cov.in.tmp=list()
+for(subsp in c("c", "e", "n", "w")){
+  allele.freq.tmp[['all']]=allele.freq[['all']][grepl(paste0("^",subsp,"."), allele.freq[['all']]$Population),]
+  #cov.in.tmp[['all']][['Real']]=cov.in[['all']][['Real']][grepl(paste0("^",subsp,"."), colnames(cov.in[['all']][['Real']]))]
+  run_env_vs_AF.v4(betai_fpr['all'], cov.in, allele.freq.tmp, stats=stats, fprs=fprs, big_line="mean")
+}
+```
+
+We see general correlations for positive candidates when looking only at samples within eastern, Nigeria-Cameroon or western. This suggests to me that differences between these subspecies are not driving the signals.
+
+However, negative candidates generally have a flat line in Nigeria-Cameroon and positive candidates have a flat line in centrals suggesting that different habitats in these subspecies are not driving these signatures. 
+
+- This isn't very surprising for centrals as they are all from forest of forest-mosaic habitats so there is not much range here. 
+
+  - Differences between centrals and other subspecies may be driving some positive candidates.
+  
+- I cannot think why we would observe this pattern in Nigeria-Cameroon.
+
+
+# Allele Frequency Clustering
+
+```{r echo=FALSE}
+# Plotting colours
+## Assign colours to populations corresponding to covariable
+pop_cov_col=list()
+cov.in.tmp=list()
+for(subsp in subsps){
+  rows=list()
+  for(i in 1:nrow(cov.in[[subsp]][['Real']])){
+    row=cov.in[[subsp]][['Real']][i,]-min(cov.in[[subsp]][['Real']][i,])
+    row=round(row*99/max(row))
+    pop_cov_col[[subsp]]=col_scale[as.vector(t(row))+1]
+    names(pop_cov_col[[subsp]])=colnames(row)
+  }
+}
+
+## Colour list
+#col_list=subsp.col
+col_list=pop_cov_col
+cluster_colours=FALSE
+```
+
+```{r echo=FALSE, out.width="33%"}
+max_n_SNP=10000
+# Make SNP x population matricies for each tail
+snp.x.pop=list()
+
+for(subsp in subsps){
+  cat(subsp, "\n")
+  for(tail in fprs){
+    tail.name=paste0(100*tail,"pct")
+    # Select candidates which are below the given threshold in the coverage corrected p value based on median XtXst over three runs
+    betai_fpr.tail=betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<=tail,]
+    # Number of populations and SNPs
+    n_SNPs=length(unique(betai_fpr.tail$MRK))
+    n_pops=length(unique(allele.freq[[subsp]]$Population))
+    ## Take a random sample if too many SNPs otherwise it takes far too long to plot
+    if(n_SNPs>max_n_SNP){
+      set.seed(123)
+      cands=betai_fpr.tail$MRK[1:sample(length(betai_fpr.tail$MRK), max_n_SNP, replace = F)]
+      str=paste0("(random sample of ", max_n_SNP, "SNPs used for cluster analysis)")
+    }else{
+      cands=betai_fpr.tail$MRK
+      str=""
+    }
+    cat(tail.name, "tail: ", n_pops, " populations", n_SNPs, " SNPs",str,"\n")
+    # Save allele frequencies for each threshold
+    allele.freq.tail=allele.freq[[subsp]][allele.freq[[subsp]]$MRK %in% cands,]
+    # Convert allele frequency files to SNP x Population matricies for standardised and non-standardised allele frequencies 
+    for(stat in c("M_P", "M_Pstd")){
+      snp.x.pop[[subsp]][[tail.name]][[stat]]=baypass.2.snp.by.pop(allele.freq.tail, stat=stat)
+    }
+  }
+}
+```
+
+## Population Patterns
+
+### Corrleation Matricies
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=7, out.width="33%"}
+# Prepare lists to store K-medoids cluster allocations for each type of allele frequencies 
+snp.x.pop.clust=list()
+# Plot correlation matrices for each allele frequency type
+for(stat in c("M_P", "M_Pstd")){
+  for(subsp in subsps){
+    for(tail in c('0.5pct', '0.1pct', '0.05pct')){
+      if(nrow(snp.x.pop[[subsp]][[tail]][[stat]])<=10000 & nrow(snp.x.pop[[subsp]][[tail]][[stat]])>2){
+        # Matrix
+        snp.x.pop.clust[[subsp]][[tail]][[stat]]=allele.freq.correlation.matrix.4(snp.x.pop[[subsp]][[tail]][[stat]], 
+                                                                        title =  paste0(subsp_name[[subsp]], ", ", tail_name[[tail]], "\n", stat_name[[stat]]),
+                                                                        #pdf_file = paste0("output/figures/", subsp, ".pop.clust.heatmap.",tail,".tail.M_Pstd.pdf")
+                                                                        name.col = col_list[[subsp]],
+                                                                        cluster_method='k_medoids')
+        # Biplot
+        #PCbiplot(prcomp(t(snp.x.pop[[subsp]][[tail]][[stat]]), scale = FALSE), 
+        #         title=paste0(subsp_name[[subsp]], ", ", tail_name[[tail]], "\n", stat_name[[stat]]), 
+        #         point.cols=col_list[[subsp]])
+      }
+    }
+  }
+}
+```
+
+M_P
+
+- M_P generally shows neutral population structure which gets blurrier as you move to more stringent tails. 
+
+- An exception is seen in central-eastern where Issa Valley is sometimes shown as a basal group, this is due to the fact that Issa valley is a large forest tree percentage outlier and so this population is driving a lot of the results so much so that we see it in the raw allele frequencies as well as in the standardised. 
+
+- In western M_P does explain neutral structure but there is far more structure here than in the full exome due to the fact that forest tree percentage correlates with the structure.
+
+M_Pstd
+
+- M_Pstd generally does not describe neutral population structure (except perhaps in western due to the correlation between the covariable and neutral structure).
+
+  - These results suggest to me that subspecies differences are not driving candidates in the multi-subspecies datasets.
+
+- 'All samples' 0.05% tail perhaps suggests that the western populations: Comoe, Djouroutou, East Nimba, Grebo and Tai have a particularly large effect? - this may be explained by the fact that ther are all the most forest=y westerns (although comoe is mosaic).
+
+- 'All samples': there is some clustering by habitat but it is not very clear, certainly not as clear as when looking in central-eastern and western.
+
+- Central-eastern: there is a clear separation into two clades for forest and non-forest.
+
+  - k-mendiods clustering only finds Issa Valley to be an outlier at the 0.5% tail, if forms part of a larger cluster of more mosaic-y populations at more stringent tails.
+
+    - There is an element of randomness here and sometimes Issa Valley is not classed as an outlier at all.
+    
+- Western: there is generally a separation into two clades; forest and non-forest, however, Comoe and to a lesser extent Sangaredi find themselves clustering with the forest despite being more mosaic.
+
+Main conclusions
+
+- Subspecies differences don't seem to drive candidates.
+
+- Issa Valley does not look like a massive outlier here, instead this suggests that all the non-forest populations are contributing to the signal in some way.
+
+  - The fact that Issa Valley clusters more according to habitat rather than neutral population structure in M_P does suggest it has a very large effect on the results.
+
+- The covariable correlates with neutral population structure in westerns.
+
+### Biplots
+
+```{r echo=FALSE, out.width="50%"}
+cluster_colours=FALSE
+for(stat in c("M_P", "M_Pstd")){
+  cat(stat, "\n")
+  for(subsp in subsps){
+    for(tail in c('0.5pct', '0.1pct', '0.05pct')){
+      if(nrow(snp.x.pop[[subsp]][[tail]][[stat]])<=10000 & nrow(snp.x.pop[[subsp]][[tail]][[stat]])>2){
+        # Sort out point colours
+        if(cluster_colours==TRUE){
+          ## Point colours according to cluster allocation
+          colours=colorRampPalette(brewer.pal(name="Paired", n = 12))(max(snp.x.pop.clust[[subsp]][[tail]][[stat]]$clusters))
+          point.cols=c()
+          for(i in snp.x.pop.clust[[subsp]][[tail]][[stat]]$clusters){point.cols=c(point.cols, colours[i])}
+        }else{
+          point.cols=col_list[[subsp]]
+        }
+        PCbiplot(prcomp(t(snp.x.pop[[subsp]][[tail]][[stat]]), scale = FALSE), title=paste0(subsp_name[[subsp]], ", ", tail_name[[tail]], "\n", stat_name[[stat]]), point.cols=point.cols)
+      }
+    }
+  }
+}
+```
+
+M_P
+
+- All
+
+  - PC1 describes neutral population structure (~50% of variation), with westerns at one extreme and central and eastern at the other.
+
+    - Issa Valley is an outlier.
+
+  - PC2 describes habitat type (~15% of variation).
+
+    - Issa Valley is the most extreme despite not being savanna.
+
+- Central-eastern
+
+  - PC1 describes habitat (~55% of variation).
+  
+  - PC2 describes neutral population structure (~15% of variation) apart from Issa Valley.
+  
+  - Issa Valley is a large outlier on both axes.
+    
+- Western
+
+  - PC1 describes habitat (~75% of variation).
+  
+  - PC2 describes neutral population structure (~7% of variation) basically separating Mt Sangbe from the rest (this is an isolated population).
+  
+M_Pstd
+
+- All
+
+  - Results are consistent with the correlation matrices - cannot see much clustering of subspecies or habitat types.
+  
+    - Supports the idea that subspecies differences are not driving the signal.
+    
+    - Savanna populations lie towards the middle.
+    
+    - Issa Valley has rather extreme PC1 and 2 values.
+    
+    - Djouroutou (forest) is a PC1 outlier - I dont know why
+    
+      - It is extremely forest-y but then so is Grebo and Tai is even more forest-y.
+
+- Central-eastern
+
+  - PC1 describes habitat (~50% of variation).
+  
+  - It is not clear what PC2 explains (~12% of variation) but it separates Budongo (forest; also extreme PC1 value in all samples) from the rest
+  
+  - Issa Valley is a large outlier on both axes.
+    
+- Western
+
+  - PC1 describes habitat (~65% of variation).
+  
+  - It is not clear what PC2 explains (~12% of variation)
+  
+  - Mt Sangbe is not an outlier suggesting its genetic isolation has been accounted for effectively.
+
+Overall
+
+- Results are largely consistent with correlation matrices.
+
+  - All samples: cant seem much clustering by subspecies or habitat.
+  
+  - Central-eastern: clustering by habitat type not subspecies.
+  
+  - Western: clustering by habitat type.
+
+- Unlike with the correlation matrices, these make me more concerned about the effect if Issa Valley.
+
+- Budongo appears to often have an extreme value.
+
+## SNP Patterns
+
+### Corrleation Matricies
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", eval=FALSE}
+# Prepare lists to store K-medoids cluster allocations for each type of allele frequencies 
+pop.x.snp.clust=list()
+# Plot correlation matrices for each allele frequency type
+for(stat in c("M_P", "M_Pstd")){
+  cat("\n", stat)
+  for(subsp in subsps){
+    for(tail in c('0.5pct', '0.1pct', '0.05pct')){
+      if(nrow(snp.x.pop[[subsp]][[tail]][[stat]])<=10000 & nrow(snp.x.pop[[subsp]][[tail]][[stat]])>2){
+        pop.x.snp.clust[[subsp]][[tail]][[stat]]=allele.freq.correlation.matrix.4(t(snp.x.pop[[subsp]][[tail]][[stat]]), 
+                                                                        title = paste0(subsp_name[[subsp]], ", ", tail_name[[tail]], "\n", stat_name[[stat]]),
+                                                                        #pdf_file = paste0("output/figures/", subsp, ".pop.clust.heatmap.",tail,".tail.M_Pstd.pdf")
+                                                                        cluster_method='k_medoids')
+      }
+    }
+  }
+}
+```
+
+M_P
+
+- Clear separation into two clusters - presumably those with higher/lower frequency in western compared to the others.
+
+M_Pstd
+
+- All samples: two rough clusters, one considerably larger than the other, presumably those positively and negatively correlated with habitat.
+
+- Central-eastern and western: two roughly equal sized very clear clusters of SNPs, presumably those positively and negatively correlated with habitat.
+
+- Central-eastern: there is a particularly tight sub-cluster - I wonder if these represnt SNPs driven by Issa Valley?
+
+### Biplots
+
+```{r echo=FALSE, out.width="50%", eval=FALSE}
+for(stat in c("M_P", "M_Pstd")){
+  cat(stat, "\n")
+  for(subsp in subsps){
+    for(tail in c('0.5pct', '0.1pct', '0.05pct')){
+      if(nrow(snp.x.pop[[subsp]][[tail]][[stat]])<=10000 & nrow(snp.x.pop[[subsp]][[tail]][[stat]])>2){
+        # Sort out point colours
+        ## Point colours according to cluster allocation
+        colours=colorRampPalette(brewer.pal(name="Paired", n = 12))(max(pop.x.snp.clust[[subsp]][[tail]][[stat]]$clusters))
+        point.cols=c()
+        for(i in pop.x.snp.clust[[subsp]][[tail]][[stat]]$clusters){point.cols=c(point.cols, colours[i])}
+        
+        PCbiplot(prcomp(snp.x.pop[[subsp]][[tail]][[stat]], scale = FALSE), title=paste0(subsp_name[[subsp]], ", ", tail_name[[tail]], "\n", stat_name[[stat]]), point.cols=point.cols)
+      }
+    }
+  }
+}
+```
+
+M_P
+
+- All samples: SNP clusters clearly explain neutral population structure.
+
+- Central-eastern: Two clear clusters of SNPs explain difference between Issa Valley and everyone else (9one cluster will be high and one will be low frequency in Issa Valley).
+
+- Western: two SNP clusters form which correlate positively or negatively with habitat.
+
+M_Pstd
+
+- All samples: Looks like three main clusters.
+
+  - One group (brown as I see it now) is quite separate from the rest and appears to be driven by Issa Valley (and chinko (mosaic) too) and the savanna-y westerns 
+  
+- Central-eastern
+
+  - I can see the particularly tight group within the blue (as I see it) cluster that I identified in the correlation matrices - these are associated with the forest populations; RubiTele, Loango, Mts de Cristal and Bili.
+  
+  - The brown group is correlated with more savanna-y populations with a particularly string effect of Issa Valley
+
+- Western
+
+  - Clear separation of two groups of SNPs explaining habitat type on PC1 with a very large amount of variation explained (~70%).   
+
+# Overall
+
+- Subspecies differences do not appear to be driving the signal.
+
+- Allele frequency clustering and correlations with habitat type are noisy ad hard to interpret when looking at all subspecies but rather obvious and clean when looking at central-eastern of western.
+
+- Some populations drive signals more than others:
+
+  - Issa Valley (eastern: mosiac/savanna)
+  
+  - Budongo (eastern: forest)
+  
+  - Djouroutou (western: forest)
+  
+  
+# Select SNP clusters then cluster by population
+
+```{r eval=FALSE}
+for(stat in c("M_P", "M_Pstd")){
+  cat("\n", stat)
+  for(subsp in subsps){
+    for(tail in c('0.5pct', '0.1pct', '0.05pct')){
+      if(nrow(snp.x.pop[[subsp]][[tail]][[stat]])<=10000 & nrow(snp.x.pop[[subsp]][[tail]][[stat]])>2){
+        n_clust=max(pop.x.snp.clust[[subsp]][[tail]][[stat]]$clusters)
+        if(n_clust>1){
+          colours=colorRampPalette(brewer.pal(name="Paired", n = 12))(n_clust)
+          plot_df=data.frame(Cluster=1:n_clust, Colour=colours)
+          dummy_plot=ggplot(data=plot_df, aes(x=Cluster, fill=Cluster, col=Cluster)) +
+            geom_density() +
+            scale_discrete_manual(name='Cluster', values = plot_df$Colour, aesthetics = c("colour", "fill")) + guides(fill=guide_legend(ncol=2))
+          #for(plot in list(plot.new(), plot(plot_grid(get_legend(dummy_plot))), plot.new())){plot}
+          for(clust in 1:n_clust){
+            clust_snps=names(pop.x.snp.clust[[subsp]][[tail]][[stat]]$clusters[pop.x.snp.clust[[subsp]][[tail]][[stat]]$clusters==clust])
+            #allele.freq.correlation.matrix.4(snp.x.pop[[subsp]][[tail]][[stat]][clust_snps,], 
+            #                                                              title = paste0(subsp, ": ",stat," Correlation: ", tail, " Tail, SNP Cluster ", clust),
+            #                                                              #pdf_file = paste0("output/figures/", subsp, ".pop.clust.heatmap.",tail,".tail.M_Pstd.pdf")
+            #                                                              cluster_method='k_medoids')
+            run_env_vs_AF.v4(betai_fpr, cov.in, allele.freq, stats=c("M_P", "M_Pstd"), fprs=fprs)
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+# Gene function key words
+
+This is meant to be a tool for exploitative analysis. Just provide key words and it will plot the allele frequencies of candidate SNPs with genes that have gene cards descriptions containing that word. Note a limitation that if you wanted genes associated with the kidney for example and set the key word to 'kidney', you will get genes that say something like "**not** associated with kidney" in their description, this seems to be relatively rare though.
+
+```{r out.width="33%", eval=FALSE}
+key_words=c(" eye", "eye ", "retina", "cornea")
+#key_words=c("malaria", "plasmodium", "falciparum")
+#key_words=c("lipid", " fat", "fat ")
+key_word_genes=gene_cards[grepl(paste(key_words, sep="|"), gene_cards$description, ignore.case=TRUE), 'symbol']
+
+betai_fpr.key_word=list()
+for(subsp in subsps){
+  cat("-", subsp, "\n")
+  for(cov in covs){
+    cat("--", cov, "\n")
+    key_word_genes=gene_cards[grepl(paste(key_words, sep="|"), gene_cards$description), 'symbol']
+    
+    betai_fpr.key_word[[subsp]]=betai_fpr[[subsp]][betai_fpr[[subsp]]$gene %in% key_word_genes, ]
+    cat("Key word(s): ", key_words, "\n")
+    cat("Candidate genes: ", betai_fpr.key_word[[subsp]][betai_fpr.key_word[[subsp]]$fpr<0.005,]$gene, "\n")
+  }
+}
+run_env_vs_AF.v4(betai_fpr.key_word, cov.in, allele.freq, stats=c("M_P", "M_Pstd"), fprs=fprs)
+```
+
+

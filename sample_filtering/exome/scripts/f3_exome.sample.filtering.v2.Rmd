@@ -1,0 +1,1340 @@
+---
+title: "Exome Sample Filtering: Remove Samples Which Do Not Cluster Correctly in Demographic Analyses (f3)"
+author: "Harrison Ostridge"
+date: "08/03/2021"
+output: html_document
+---
+
+f1_exome.sample.filtering.Rmd - Remove Contaminated and Low Coverage Samples.
+  - PC1 threshold.
+  - <1% human contamination.
+  - >0.5x coverage.
+
+f2_exome.sample.filtering.Rmd - Remove Related Samples.
+  - Remove first order relatives as estimated using ngsRelate.
+
+**f3_exome.sample.filtering.Rmd - Remove Samples Which Do Not Cluster Correctly in Demographic Analyses.**
+  - Analyse PCAngsd and NGSadmix results.
+  - Identify poor quality samples and sample swaps.
+  
+f4_exome.sample.filtering.Rmd - Reassign Swapped Samples
+  - Identify samples which have been misslabeled and reassign them to their correct communities
+
+f5_exome.sample.filtering.Rmd - Remove Related Swapped Samples
+  - After reassigning swapped samples, we need to check they are not related to samples in their new (correct) communities.
+  - This is needed because the first stage of removing relatives was ran within each of the original communities.
+
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/sample_filtering/exome/') 
+min.cov=0.5
+```
+
+#### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(dplyr)
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(ggplot2)
+library(readxl)
+library(plyr)
+library(tidyr)
+library(stringr)
+library(igraph)
+library(RColorBrewer)
+library(grid) 
+library(gridExtra)
+library(fields)
+library(networkD3)
+library(htmlwidgets)
+library(ggrepel)
+
+output_dir="output/"
+pcangsd_output_dir="../../pcangsd/exome/output/"
+ngsadmix_output_dir="../../ngsadmix/exome/output/"
+```
+
+#### Read in data
+
+```{r}
+# Read in metadata
+exome_pc1.hc.c.rel=read.csv(paste0(output_dir, "/f2/f2.metadata.csv"), check.names = FALSE)
+## Remove trailing whitespace (trimws and gsub dont work for some reason)
+exome_pc1.hc.c.rel$`Num Position  (Human Contamination)`=as.numeric(
+  substr(exome_pc1.hc.c.rel$`Num Position  (Human Contamination)`, 1, nchar(exome_pc1.hc.c.rel$`Num Position  (Human Contamination)`) - 1)
+)
+## Ensure it is in the correct order
+exome_pc1.hc.c.rel=exome_pc1.hc.c.rel[order(exome_pc1.hc.c.rel$Sample),]
+# Read in filter table
+filter.table=read.csv(paste0(output_dir, "/f2/f2.filtertable.csv"), check.names = FALSE)
+```
+
+# 1- f2 PCA and NGSadmix - Looking for outliers
+
+Here we identify and remove samples which do not cluster with their source populations. Samples which fail to cluster correctly may be the result of sample swaps, contamination or poor quality (e.g. low coverage meaning there is not enough information to correctly assign them to their source community). Samples contaminated from non-chimps or low coverage samples should have been removed using our thresholds but this stage should catch any which still do not behave. Sample swaps and cross contamination can only be identified and dealt with using these demographic analyses. 
+
+It is possible that a sample failing to cluster with its source community could be due to migration and gene flow. Geographic proximity can inform how likely this scenario is.
+
+## f2 ANGSD
+
+ANGSD was run for all samples and each subspecies seperately using teh shell scripts `run_angsd_f2.0.5x.all_minInd15_doMajorMinor.1_HWE.p.1e-3_beagle.sh` and `run_angsd_f2.0.5x.subsp_minInd15_doMajorMinor.1_HWE.p.1e-3_beagle.sh` in `/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/scripts/mapped.on.target/`. 
+
+```{bash eval=FALSE}
+#################################### INFO ####################################
+# This script is run with doMajorMinor 1 (to ensure no excess of high freq DAFs) and a HWE filter (to ensure no bump at 0.5 due to paralogs).
+# GLF is in beagle format for PCAngsd
+# The output is used to plot a PCA and perform the first stage of filtering (removing PC1 outliers)
+#################################### JOB ####################################
+# Load modules
+module load htslib
+# Subspecies; c=central, e=eastern, n=Nigeria-Cameroon, w=western
+for POP in c e n w
+do
+/usr/bin/time --verbose \
+~/bin/angsd/angsd \
+-b /home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/f2_pc1_hc.1pct_coverage.0.5x_rm.rel/bam.filelist.${POP} \
+-out ${POP}/f2.0.5x.${POP} \
+-ref ~/Scratch/data/ref_genomes/hg19.fa \
+-anc ~/Scratch/data/ref_genomes/homo_sapiens_ancestor_GRCh37_e71/homo_sapiens_ancestor_fullgenome.fa \
+-uniqueOnly 1 \
+-remove_bads 1 \
+-only_proper_pairs 1 \
+-trim 0 \
+-C 50 \
+-baq 1 \
+-minInd 15 \
+-skipTriallelic 1 \
+-GL 2 \
+-doGlf 2 \
+-minMapQ 30 \
+-nThreads 10 \
+-doMajorMinor 1 \
+-doMaf 2 \
+-SNP_pval 0.000001 \
+-minMaf 0.01 \
+-doHWE 1 \
+-minHWEpval 0.001 \
+-doSaf 1
+done
+```
+
+## f2 PCA
+
+PCAngsd is run on myriad using the scripts `run_pcangsd_f2.0.5x.all.sh` and `run_pcangsd_f2.0.5x.subsp.sh` in the following directory `/home/ucfajos/analysis/phase1and2_exome_analysis/pcangsd/scripts/mapped.on.target/`
+
+```{bash eval=FALSE}
+# Example PCAngsd shells script. this one loops over all subspecies
+INDIR='/home/ucfajos/Scratch/output/phase1and2_exome_output/angsd_output/mapped.on.target/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01_beagle'
+# Load modules
+module load python3/3.7
+# Run PCAngsd
+for SUBSP in c e n w
+        do
+        /usr/bin/time --verbose \
+        python3 ~/bin/pcangsd/pcangsd.py \
+        -beagle ${INDIR}/${SUBSP}/f2.0.5x.${SUBSP}.beagle.gz \
+        -o ${SUBSP}/f2.0.5x.${SUBSP} \
+        -threads 10
+        done
+```
+
+Copy results onto local machine.
+
+```{bash eval=FALSE}
+scp -r /home/ucfajos/Scratch/output/phase1and2_exome_output/pcangsd_output/mapped.on.target/f2.0.5x.\* /Users/harrisonostridge/OneDrive - University College London/Projects/Ostridge_PanAf/pcangsd/exome/output
+```
+
+## Plot f2 PCAs
+
+```{r}
+plot.PCA=function(subsps, meta.data, input.dir, output.file=NULL, label=NULL, return.df=FALSE){
+  # Create list to store result data frames in
+  results=list()
+  # BAM file lists are always given in alphabetical order (with respect to sample name) so it is important to ensure the samples are in this order
+  meta.data=meta.data[order(meta.data$Sample),]
+  # Add label column, if no column is provided a blank label column is used
+  meta.data$label=''
+  if(!is.null(label)){meta.data$label=meta.data[[label]]}
+  # Loop over each subspecies provided
+  for(subsp in subsps){
+    title=""
+    meta.data.subsp=meta.data
+    # Subspecies options
+    if(subsp=="c"){title="Central"}
+    if(subsp=="e"){title="Eastern"}
+    if(subsp=="n"){title="Nigeria-Cameroon"}
+    if(subsp=="w"){title="Western"}
+    if(subsp=="all"){title="All Samples"
+      # Group defines how to draw polygons
+      group="Subspecies"
+      input=paste0(input.dir,"f2.0.5x.", subsp,".cov")}
+    if(subsp != "all"){
+      # Group defines how to draw polygons
+      group="Community"
+      input=paste0(input.dir, subsp,"/f2.0.5x.", subsp,".cov")
+      if(title!=""){meta.data.subsp=meta.data[meta.data$Subspecies==title,]}}
+    # Read in PCAngsd output
+    cov=read.table(input)
+    pcs=eigen(cov)
+    # Select columns corresponding to PC1 and PC2
+    pc1.pc2=as.data.frame(pcs$vectors[,1:2])
+    colnames(pc1.pc2)=c("f2.PC1", "f2.PC2")
+    # Add PC1 and PC2 columns to metadata
+    ## The order of samples in PCAngsd output should be alphabetical as the BAM file lists were written in this order
+    pc1.pc2=cbind(meta.data.subsp, pc1.pc2)
+    # Percentage variance explained by PCs
+    PC1.percent=pcs$values[1]/sum(pcs$values)*100
+    PC2.percent=pcs$values[2]/sum(pcs$values)*100
+    # Plot
+    PC1.lab=paste("PC1 (", round(PC1.percent,digits = 2),"%)")
+    PC2.lab=paste("PC2 (", round(PC2.percent,digits = 2),"%)")
+    find_hull=function(pc1.pc2) pc1.pc2[chull(pc1.pc2[,'f2.PC1'], pc1.pc2[,'f2.PC2']), ]
+    hulls=ddply(pc1.pc2, group, find_hull)
+    # Plot all samples
+    if(subsp=="all"){
+      plot=ggplot(pc1.pc2, aes(x=f2.PC1, y=f2.PC2, fill=Subspecies, colour=Subspecies, label = label)) +
+        theme_minimal()+ 
+        geom_point(aes(shape=Subspecies), size = 1) + 
+        geom_text_repel(size = 3, min.segment.length = unit(0.1, "lines"), show.legend = FALSE) +
+        geom_polygon(data = hulls, alpha = 0.5) + 
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+        guides(fill=guide_legend(ncol=1)) + 
+        labs(x=paste(PC1.lab), y=paste(PC2.lab)) + 
+        ggtitle(title) +
+        scale_fill_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+        scale_color_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+        scale_shape_manual(values=0:4)
+    }
+    # Plot individual subspecies
+    else{
+      plot=ggplot(pc1.pc2, aes(x=f2.PC1, y=f2.PC2, fill=Site, colour=Site, label = label)) +
+        theme_minimal()+ 
+        geom_point(aes(shape=Site), size = 1) + 
+        geom_text_repel(size = 3, min.segment.length = unit(0.1, "lines"), show.legend = FALSE) +
+        geom_polygon(data = hulls, alpha = 0.5) + 
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+        guides(fill=guide_legend(ncol=1), shape=guide_legend(ncol=1)) + 
+        labs(x=paste(PC1.lab), y=paste(PC2.lab)) + 
+        ggtitle(title) +
+        scale_shape_manual(values=rep(0:6, 10))
+    }
+    # If an output file is provided, write to it
+    if(!is.null(output.file)){ggsave(paste0(output.file), plot=plot)}
+    # Display plot
+    print(plot)
+    # Save metadata with PC1 and PC2 columns added for the subspecies in results list
+    results[[subsp]]=pc1.pc2
+  }
+  # If return.df is set to TRUE, return the results list
+  if(return.df==T){return(results)}
+}
+```
+
+### All Samples
+
+```{r}
+exome_pc1.hc.c.rel_pcs=plot.PCA("all", 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         return.df=T,
+         label = "Sample")
+```
+
+**We can see there are potential sample swaps/bad samples here as western and central really shouldn't overlap**
+
+Here I check if the problematic samples have extreme coverage of contamination values.
+
+```{r out.width="25%"}
+pc1.vs.stats=function(subsp, colour=black){
+  data.subsp=exome_pc1.hc.c.rel_pcs[['all']][exome_pc1.hc.c.rel_pcs[['all']]$Subspecies==subsp,]
+  cov=ggplot(data.subsp, aes(x=f2.PC1, y=Coverage, label = Sample)) +
+    theme_minimal()+ 
+    geom_text(size = 3, colour=colour) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    labs(x="PC1", y="Coverage") + 
+    ggtitle(paste0(subsp, ": PC1 vs Coverage"))
+  hc=ggplot(data.subsp, aes(x=f2.PC1, y=`Human Contamination (%)`, label = Sample)) +
+    theme_minimal()+ 
+    geom_text(size = 3, colour=colour) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    labs(x="PC1", y="Human Contamination (%)") + 
+    ggtitle(paste0(subsp, ": PC1 vs Human Contamination"))
+  print(cov)
+  print(hc)
+}
+# plot in for loop so is displayed correctly in knitted markdown
+subsps=list("Central", "Eastern", "Nigeria-Cameroon", "Western")
+subsps.col=list("green3", "darkorange", "red", "blue")
+for(i in 1:4){pc1.vs.stats(subsps[i], subsps.col[i])}
+```
+
+The troublesome samples (PC1 outliers) in central and western have low coverage and reasonably high human contamination but it isn't a very dramatic pattern.
+
+All subspecies show a possible slight pattern with lower coverage samples being pulled closer to (0,0) as would be expected (and was found in chr21 SOM). As long as this does not result in long tails or overlaps between subspecies I don't think this is an issue.
+
+### PCA per subspecies
+
+I ran PCAngsd per subspecies. Sample swaps between subspecies should appear as major outliers and swaps between communities in the same subspecies can be identified by samples clustering with different communities to those they are assigned. I label only the 'f2.pca.probem.samples' so we can see where they lie.
+
+```{r}
+# Make a vector of problem samples
+f2.pca.probem.samples=c("GB-14-05", "Con2-57", "Fjn2-62")
+# Make a column containing only the sample names of problem samples so they can be plotted
+exome_pc1.hc.c.rel$f2.pca.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% f2.pca.probem.samples, exome_pc1.hc.c.rel$Sample, "")
+```
+
+#### Plot proplem samples
+
+```{r  message=FALSE, warning=FALSE, out.width="50%"}
+exome_pc1.hc.c.rel_pcs.subsp=plot.PCA(c("c", "w"), 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="f2.pca.probem.samples",
+         return.df=T)
+```
+
+##### Centrals
+
+- **GB-14-05 and Con2-57 lie very close to the point (0,0) suggesting to me that they just don't have enough information associated with them to cluster correctly.**
+
+- GB-14-05 and Con2-57 are not outliers suggesting that there was not a sample swap with a western sample.
+
+##### Westerns
+- **Fjn2-62 lies within the polygon definition the community it is from (Sobeya), however, is close to (0,0)**
+
+  - There may be nothing wrong with it or it could be a poor quality sample - need to check with different analyses.
+
+#### Identify problem samples at the subspecies scale
+
+NB: I identified the samples first by plotting all sample names. Below I just plot those I highlighted for clarity.
+
+```{r  message=FALSE, warning=FALSE, out.width="50%"}
+# Add new problem samples
+## NB: there isn't necessarily an issue with all these samples but their PCA results warrant further investigation to make sure.
+f2.pca.probem.samples=c(f2.pca.probem.samples, "CMNP1-24", "Gco4-2", "Fjn3-24", "Gep2-41")
+# Make column where the only Samples with names are the problem samples
+exome_pc1.hc.c.rel$f2.pca.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% f2.pca.probem.samples, exome_pc1.hc.c.rel$Sample, "")
+
+# Plot Additional concerning samples
+exome_pc1.hc.c.rel_pcs.subsp=plot.PCA(c("c", "e", "n", "w"), 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="f2.pca.probem.samples",
+         return.df=T,
+         output.file=paste0(output_dir, "/f3/pca.problem.samples.pdf"))
+```
+
+##### Centrals
+
+- **The Campo Maan sample doesn't cluster with the rest of the northern clade.**
+
+  - This sample is CMNP1-24 (not the same as the one which passes the chr21 filter (CMNP1-8)).
+
+##### Easterns
+
+- No clear issues
+
+#####  Nigeria-Cameroon
+
+- No clear issues
+
+##### Westerns
+
+- **There is a Sangaredi sample (Gco4-2) which does not cluster with its community at all but instead clusters with MtSangbe: this looks a lot like a sample swap.**
+
+  - These communities are not at all close so is extremely unlikely to be due to migration.
+
+  - The sample which does not cluster with its community is Gco4-2. It clusters with MtSangbe which have names such as "San*" so its hard to see how this could be due to misreading a label in the lab (as has happened before with Baf vs Bat).
+
+- **There are two samples which are outliers compared to the rest of the community: Fjn3-24 and Gep2-41**
+
+### f2 PCA Summary
+
+- No sample swap between subspecies.
+
+- Two central samples which appear to have very little information - should we remove?
+
+- Campo Ma'an sample doesn't cluster with the northern clade.
+
+- One western sample may potentially have little information but also clusters with the rest of the community - probably fine to keep?
+
+- There appears to be a sample swap in western - and I have high confidence in the correct community - remove or reassign?
+
+- There are two western samples which do not cluster with their communities well.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%"}
+plot.PCA("all", 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="f2.pca.probem.samples")
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%"}
+plot.PCA(c("c","w"), 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="f2.pca.probem.samples")
+```
+
+#### Alternative PCA method
+
+Rather than running ANGSD separably for each subspecies you can just select the relevant columns in the beagle file generated from running ANGSD on all subspecies together. Here I quickly try this method to check my decisions are robust to PCA method.
+
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+# Plot Additional concerning samples
+plot.PCA(c("c", "e", "n", "w"), 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.subsp.from.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="f2.pca.probem.samples")
+```
+
+The PCAs look broadly the same but patterns of population structure are less clear. They also look less similar to those made by Claudia with chr21 leading me to believe this is not the best method. This could be due to the fact that filters were applied to all samples together, particularly minInd which could mean that there are some sites here where there is data for no individuals or at least very few in a given subspecies.
+
+The same samples are outliers using either method so it is robust to the PCA method.
+
+## f2 NGSadmix
+
+I run NGSadmix on myriad to further investigate samples which looked problematic in the PCA analysis. NGSadmix attempts to form K discrete clusters allowing us to see more explicitly how well samples cluster with their communities. It also helps in the identification of swapped samples and possible migrants.
+
+Scripts are in `/home/ucfajos/analysis/phase1and2_exome_analysis/ngsadmix/scripts/` and called `run_ngsadmix_all_K2to10_10runs.sh`, `run_ngsadmix_c_K2to10_10runs.sh` etc. NGSadmix is run 10 times for each K and the result with the highest likelihood is plotted.
+
+```{bash eval=FALSE}
+# Example NGSadmix shell script. This is for all samples (not subspecies specific)
+INDIR="/home/ucfajos/Scratch/output/phase1and2_exome_output/angsd_output/mapped.on.target/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01_beagle"
+# Load modules
+module load htslib
+# Run NGSadmix
+for K in {2..10}
+        do
+        for RUN in {1..10}
+                do
+                /usr/bin/time --verbose \
+                /home/ucfajos/bin/angsd/misc/NGSadmix \
+                -likes ${INDIR}/f2.0.5x.all.beagle.gz \
+                -K $K \
+                -P 10 \
+                -o f2.0.5x.all_K${K}_run${RUN} 
+                done
+        done
+```
+
+Copy results to local machine.
+
+```{r eval=FALSE}
+scp -r myriad:/home/ucfajos/Scratch/output/phase1and2_exome_output/ngsadmix_output/mapped.on.target/\* /Users/harrisonostridge/OneDrive - University College London/Projects/Ostridge_PanAf/ngsadmix/exome/output
+```
+
+### Selecting the best runs and K values
+
+These bash scripts pull the log likelihood out of the NGSadmix result and organises the results in a table. This is done in bash rather than R as the log file is not tabular making manipulation in R very difficult.
+
+#### All
+
+```{bash}
+pwd
+# bash
+INDIR='../../ngsadmix/exome/output/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01'
+OUTDIR='output/f2/ngsadmix/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01'
+echo k run log >> ${OUTDIR}/k_logs.TEMP.txt
+for K in {2..10}
+  do
+  for RUN in {1..10}
+     do
+     # Look for line with 'best' in it, split the string at spaces and take the second element then split it by '-' and take the second element and you have the log likelihood
+     LOG=`grep best ${INDIR}/f2.0.5x.all_K${K}_run${RUN}.log | cut -d' ' -f 2 | cut -d'=' -f 2`
+     # By saving as a temporary file and then moving it to its final name we stop the file from just continually growing each time we run this chunk
+    echo $K $RUN $LOG >> ${OUTDIR}/k_logs.TEMP.txt
+  done
+done
+mv ${OUTDIR}/k_logs.TEMP.txt ${OUTDIR}/k_logs_all.txt
+```
+
+```{r}
+# Read table with log liklihoods of each run into R
+k_logs_all=fread(paste0(output_dir, '/f2/ngsadmix/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/k_logs_all.txt'))
+# Select run with maximum likelihood per K
+max_logs_all=k_logs_all %>% group_by(k) %>% slice(which.max(log))
+```
+
+We select the run with the highest log-likelihood i.e. least negative e.g. a run with a log-likelihood of -2 would be selected over one with a log-likelihood of -5. I have manually checked that this is what the code is doing.
+
+#### Subspecies
+
+```{bash}
+pwd
+for SUBSP in c e n w
+  do
+  # bash
+  INDIR='../../ngsadmix/exome/output/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01'
+  OUTDIR='output/f2/ngsadmix/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01'
+  echo k run log >> ${OUTDIR}/${SUBSP}/k_logs.TEMP.txt
+  for K in {2..10}
+    do
+    for RUN in {1..10}
+       do
+       # Look for line with 'best' in it, split the string at spaces and take the second element then split it by '-' and take the second element and you have the log likelihood
+       LOG=`grep best ${INDIR}/${SUBSP}/f2.0.5x.${SUBSP}_K${K}_run${RUN}.log | cut -d' ' -f 2 | cut -d'=' -f 2`
+      # By saving as a temporary file and then moving it to its final name we stop the file from just continually growing each time we run this chunk
+      echo $K $RUN $LOG >> ${OUTDIR}/${SUBSP}/k_logs.TEMP.txt
+    done
+  done
+  mv ${OUTDIR}/${SUBSP}/k_logs.TEMP.txt ${OUTDIR}/${SUBSP}/${SUBSP}_k_logs.txt
+done
+```
+
+```{r}
+# Prepare list to store results in
+max_logs_subsp=list()
+# For each subspecies...
+for(subsp in c('c', 'e', 'n', 'w')){
+  # Read table with log likelihoods of each run into R
+  k_logs=fread(paste0(output_dir, '/f2/ngsadmix/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/', subsp,"/", subsp, "_k_logs.txt"), fill = TRUE)
+  # Select run with maximum likelihood per K
+  max_logs_subsp[[subsp]]=k_logs %>% group_by(k) %>% slice(which.max(log))
+}
+```
+
+### Plot f2 NGSadmix Results
+
+The function plots the NGSadmix results with the highest log likelihood for each K. Samples within a group are ordered according to the proportion of ancestry from the main ancestral population for the group and groups are ordered according to the ancestral population which contributed the most. This is to try and aid interpretation but may actually impeed it as it is hard to compare different Ks.
+
+```{r}
+# Plotting function
+plot.NGSadmix=function(meta.data, max.logs, input.prefix, output.prefix=NULL, title=NULL, Ks=2:10, group="Site"){
+  # This function plots the results from NGSadmix as stacked bar charts.
+  # Ensure samples are in the correct order (this is the order of the BAM file list input for ANGSD and therefore the order of input for NGAadmix)
+  meta.data=meta.data[order(meta.data$Sample),]
+  # Loop over K values
+  plots=list()
+  for(K in Ks){
+    # Select run with highest likelihood for this values of K
+    run=paste0(max.logs[max.logs$k==K, 'run'])
+    # Read in data for the run with the highest likelihood 
+    q=read.table(paste0(input.prefix, "_K", K, "_run", run, ".qopt"))
+    # I standardise the column names to 'group' rather than 'Site' or 'Subspecies' etc. so it is general
+    meta.data$Group=meta.data[,group]
+    # cbind samples and group to NGSadmix results
+    meta.data.q=cbind(meta.data, q)
+    # Change to long format
+    df=meta.data.q %>% pivot_longer(colnames(meta.data.q)[(1+ncol(meta.data.q)-K):ncol(meta.data.q)], names_to = "key", values_to = "value")
+    # Ordering individuals
+    ## Make empty df so each population can be dealt with separately and rbinded together at the end
+    df.all=data.frame()
+    max.keys=data.frame()
+    ## For each population, ensure that samples are ordered according to proportion of ancestry from the major ancestral population for the modern
+    for(pop in unlist(unique(df$Group))){
+      # Select rows corresponding to each population 
+      df.pop=df[df$Group==pop, ]
+      # Sum the proportions of each ancestral population
+      value.per.key=tapply(df.pop$value, df.pop$key, FUN=sum)
+      # Select the ancestral population that has contributed the most to the modern population
+      max.key=rownames(data.frame(which.max(value.per.key)))
+      # Calculate the proportion of ancestry this ancestral population contributed to modern population
+      max.key.prop=value.per.key[which.max(value.per.key)]/length(unique(df.pop$Sample))
+      max.keys=rbind(max.keys, cbind(pop, max.key, max.key.prop))
+      # Select rows corresponding to this ancestral population and order by proportion
+      df.pop.max.key=df.pop[df.pop$key==max.key, ]
+      df.pop.max.key=df.pop.max.key[order(df.pop.max.key$value),]
+      # Important to have leading 0s on the numbers or the ordering doesn't work
+      sample.order=data.frame(cbind(df.pop.max.key$Sample, paste0(sprintf('%0.3d', 1:length(df.pop.max.key$Sample)), pop)))
+      colnames(sample.order)=c("Sample", "order")
+      df.pop=merge(df.pop, sample.order, by="Sample", all.x=T)
+      df.all=rbind(df.all, df.pop)
+    }
+    # Ordering populations
+    df.all=merge(df.all, max.keys, by.x="Group", by.y="pop")
+    # Order by the main ancestral population then order populations by the proportion of ancestry contribution
+    max.keys=max.keys[order(max.keys$max.key, max.keys$max.key.prop),]
+    # Make group type factor so ggplot follows the ordering
+    df.all$Group=factor(df.all$Group,levels=unique(max.keys$pop))
+    # Plot
+    Plot=ggplot(df.all, aes(as.factor(order), value, fill=key)) +
+      geom_col(position = "fill", width = 1) + 
+      facet_grid(.~Group, space="free", scales="free_x") + 
+      theme_minimal() + 
+      scale_y_continuous(expand = c(0, 0)) + 
+      scale_fill_manual(values = colorRampPalette(brewer.pal(K, "Set1"))(K)) + 
+      labs(title=paste0(title, " K=", K), x="", y="") +
+      scale_x_discrete(expand = c(0,0)) + 
+      theme(plot.title = element_text(hjust = 0.5), legend.position="none", axis.text.x = element_blank(), 
+            strip.text.x = element_text(angle=90, hjust=0), panel.background = element_rect(fill = NA, color=NA))
+    ## In order to prevent the titles being cropped, I turn the plot into a Grob
+    ### I saved the grobs for each K in a list 
+    plots[[K]] <- ggplotGrob(Plot)
+    ### Select each element beginning with "strip-t" (indicating parameters related to titles at the top (hence "-t"))
+    for(i in which(grepl("strip-t", plots[[K]]$layout$name))){plots[[K]]$grobs[[i]]$layout$clip <- "off"}
+    # Save as pdf id the option is selected 
+    if(!is.null(output.prefix)){ggsave(paste0(output.prefix, "_K", K, ".pdf"), plot=plots[[K]])}
+    # Display plot
+    grid.arrange(plots[[K]])
+  }
+}
+```
+
+```{r}
+# Make groups which will allow us to isolate the problematic samples and compare to subspecies/site
+exome_pc1.hc.c.rel$subsp.or.f2.pca.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% f2.pca.probem.samples, exome_pc1.hc.c.rel$Sample, exome_pc1.hc.c.rel$Subspecies)
+exome_pc1.hc.c.rel$site.or.f2.pca.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% f2.pca.probem.samples, exome_pc1.hc.c.rel$Sample, exome_pc1.hc.c.rel$Site)
+```
+
+#### All
+
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel, 
+              max.logs=max_logs_all, 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/f2.0.5x.all'), 
+              title="All Samples", 
+              Ks=2:10, 
+              group="subsp.or.f2.pca.probem.samples")
+```
+
+K2 to K10
+
+- Fjn2-62, Con2-57 and GB-14-05 fail to cluster correctly and are usually reported as some kind of central-western mix.
+
+  - **As you cannot even work out what subspecies they are from they must be discarded.**
+
+  - These are the same samples that failed to cluster correctly in the all samples f2 PCA.
+
+- All other potentially problematic samples looked fine at this scale.
+
+#### Central
+
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Central",], 
+              max.logs=max_logs_subsp[['c']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/c/f2.0.5x.c'), 
+              title="All Samples", 
+              Ks=2:10, 
+              group="site.or.f2.pca.probem.samples")
+```
+
+K2 to K10
+  
+- CMNP1-24: **SAMPLE SWAP**.
+  
+  - CMNP1-24 clusters with southern clade when it should be with the northern.
+
+  - As you move to larger values of K it is clear that this sample is in fact from Conkouati or Loango.
+  
+    - **I cannot distinguish between two potential sources so this sample should be removed.**
+
+- Con2-57 and GB-14-05: **POOR QUALITY SAMPLES**.
+
+  - For small Ks, they are reported as a mixture of the main ancestral populations suggesting to me that the program just can't tell where they're from.
+
+  - For larger Ks they are reported as having similar ancestry for a northern clade population at one K and a southern clade population in the next K.
+
+#### Western
+
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Western",], 
+              max.logs=max_logs_subsp[['w']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/w/f2.0.5x.w'), 
+              title="All Samples", 
+              Ks=2:10, 
+              group="site.or.f2.pca.probem.samples")
+```
+
+K2 to 10
+
+- Gep2-41: **POOR QUALITY SAMPLE**.
+
+  - Only Comoe sample which is not classed as being almost entirely descended from a Comoe-like ancestral population.
+  
+- Fjn3-24:  **POOR QUALITY SAMPLE**
+  
+  - Has much more Comoe-like ancestry than the rest of Sobory.
+
+  - Far too far apart to be due to gene flow.
+  
+- Gco4-2: **SAMPLE SWAP** 
+
+  - Almost certainly a MtSangbe sample.
+  
+- Fjn2-62 looks fine.
+
+  - This is odd because it doesn't cluster neatly with westerns when looking at all samples.
+  
+  - Perhaps this is because it is a poor quality sample so is pulled towards (0,0) when looking at all samples but when comparing within westerns there is enough information to tell what community it is? I don't know.
+
+## PCA and NGSadmix Conclusions 
+
+**Samples too poor to cluster into subspecies correctly: Fjn2-62, Con2-57 and GB-14-05**
+
+  - Must be removed as they have too little information to cluster correctly at the subspecies scale.
+  
+  - It is concerning that they pass our coverage and contamination filters but are still bad.
+  
+**Samples too poor to cluster into their communities correctly: Gep2-41 and Fjn3-24**
+  
+  - Consider removing.
+
+**Sample swaps: CMNP1-24 and Gco4-2**
+
+  - CMNP1-24
+  
+    - Recorded community: CampoMaan.
+    
+    - Most likely true community: Conkouati or Loango.
+    
+  - Gco4-2
+  
+    - Recorded community: Sangaredi.
+    
+    - Most likely true community: MtSangbe.
+
+# 2- Why do samples pass our thresholds but still fail to cluster correctly?
+
+Poor quality samples: Fjn2-62, Con2-57, GB-14-05, Gep2-41 and Fjn3-24.
+
+## Looking back to the f0 PC1 filter
+
+If I can't explain why these samples do not cluster using coverage and contamination statistics maybe there is an issue with the first stage of filtering. The first stage performs a PCA on all samples (unfiltered) in order to identify those which do not cluster with chimps and are therefore likely contaminated. Below I plot the density of PC1 values for each subspecies.
+
+```{r out.width="50%"}
+# Define poor quality samples which did not cluster correctly
+no.clust=c("Fjn2-62", "Con2-57", "GB-14-05", "Gep2-41", "Fjn3-24")
+# Add colour column so they are coloured by subspecies
+exome_pc1.hc.c.rel$subsp.colour[exome_pc1.hc.c.rel$Subspecies == "Central"] = 'green3'
+exome_pc1.hc.c.rel$subsp.colour[exome_pc1.hc.c.rel$Subspecies == "Eastern"] = 'darkorange'
+exome_pc1.hc.c.rel$subsp.colour[exome_pc1.hc.c.rel$Subspecies == "Nigeria-Cameroon"] = 'red'
+exome_pc1.hc.c.rel$subsp.colour[exome_pc1.hc.c.rel$Subspecies == "Western"] = 'blue'
+# Get metadata for these samples
+meta.data_no.clust=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Sample %in% no.clust,]
+# Randomly sample some y values so sample names aren't all overlapping 
+y.values=sample(0:600, nrow(meta.data_no.clust))
+# Density plots
+ggplot(NULL) + 
+  geom_density(data=exome_pc1.hc.c.rel, aes(x=f0.PC1), col='black', fill='black',  alpha=0.3, adjust=0.5) +
+  geom_density(data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Central",], aes(x=f0.PC1), col='green3', fill='green3',  alpha=0.3, adjust=0.5) +
+  geom_density(data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Eastern",], aes(x=f0.PC1), col='darkorange', fill='darkorange',  alpha=0.3, adjust=0.5) +
+  geom_density(data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Nigeria-Cameroon",], aes(x=f0.PC1), col='red', fill='red',  alpha=0.3, adjust=0.5) +
+  geom_density(data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Western",], aes(x=f0.PC1), col='blue', fill='blue',  alpha=0.3, adjust=0.5) +
+  labs(title="PC1 Density: from PCA on All Samples Unfiltered",x ="PC1", y = "Density") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_vline(xintercept = -0.01, linetype="dashed") +
+  geom_segment(data=meta.data_no.clust, aes(x=f0.PC1, y=y.values, xend=f0.PC1, yend=-Inf), 
+               colour=meta.data_no.clust$subsp.colour, linetype="dashed", alpha=0.25) +
+  geom_text(data=meta.data_no.clust, aes(x=f0.PC1, y=y.values), 
+            label=meta.data_no.clust$Sample, colour=meta.data_no.clust$subsp.colour, size=2)
+```
+
+Because the PC1 for unfiltered samples not only separate contaminated and non-contaminated samples but also separated subspecies, samples may have unusual PC1 values with respect to their subspecies but not with respect to chimpanzees as a whole were not filtered out. This may explain how we have retained some poor quality samples.
+
+#### Central
+- Con2-57 and GB-14-05 lie at the upper tail of centrals - these are the samples which fail to cluster with other centrals.
+
+#### Western
+- Fjn-62 is the most extreme western sample - this sample fails to cluster with westerns.
+
+- Gep2-41 and Fjn3-24 have typical values for westerns - unsurprising as their clustering is only questionable within westerns (rather than between subspecies).
+
+### Other outliers
+
+I now look for other samples which could be considered f0 PC1 outliers with respect to their subspecies and check them again to make sure such samples are not causing unusual patterns.
+
+```{r out.width="25%"}
+for(subsp in c("Central","Eastern","Nigeria-Cameroon","Western")){
+  exome_pc1.hc.c.rel_subsp=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies==subsp,]
+  y.values=sample(0:600, nrow(exome_pc1.hc.c.rel_subsp))
+  plot=ggplot(NULL) + 
+    geom_density(data=exome_pc1.hc.c.rel, aes(x=f0.PC1), col='black', fill='black',  alpha=0.3, adjust=0.5) +
+    geom_density(data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Central",], aes(x=f0.PC1), col='green3', fill='green3',  alpha=0.3, adjust=0.5) +
+    geom_density(data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Eastern",], aes(x=f0.PC1), col='darkorange', fill='darkorange',  alpha=0.3, adjust=0.5) +
+    geom_density(data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Nigeria-Cameroon",], aes(x=f0.PC1), col='red', fill='red',  alpha=0.3, adjust=0.5) +
+    geom_density(data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Western",], aes(x=f0.PC1), col='blue', fill='blue',  alpha=0.3, adjust=0.5) +
+    labs(title="Unfiltered PC1 Density",x ="Unfiltered PC1", y = "Density") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    geom_vline(xintercept = -0.01, linetype="dashed") +
+    geom_segment(data=exome_pc1.hc.c.rel_subsp, aes(x=f0.PC1, y=y.values, xend=f0.PC1, yend=-Inf), 
+                 colour=exome_pc1.hc.c.rel_subsp$subsp.colour, linetype="dashed", alpha=0.25) +
+    geom_text(data=exome_pc1.hc.c.rel_subsp, aes(x=f0.PC1, y=y.values), 
+              label=exome_pc1.hc.c.rel_subsp$Sample, colour=exome_pc1.hc.c.rel_subsp$subsp.colour, size=3)
+  print(plot)
+}
+```
+
+Centrals: Con2-25, LCA-3-10
+
+Easterns: N186-8, Kab1-5, N262-4
+
+Nigeria-Cameroon: Kor1-27
+
+Western: Fjn3-43, Fouta3-55, Gep1-62
+
+#### Check these samples in f2 PCA
+
+##### All
+```{r}
+f0.pca.probem.samples=c("Con2-25", "LCA-3-10", "N186-8", "Kab1-5", "N262-4", "Kor1-27", "Fjn3-43", "Fouta3-55", "Gep1-62")
+exome_pc1.hc.c.rel$f0.pca.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% f0.pca.probem.samples, exome_pc1.hc.c.rel$Sample, "")
+
+plot.PCA("all", 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="f0.pca.probem.samples")
+```
+
+Kor1-27 could potentially be bad as it has the most extreme PC1 value of Nigeria-Cameroon sitting very close to westerns. The rest look fine.
+
+##### Subspecies
+```{r out.width="50%"}
+plot.PCA(c("c", "e","n","w"), 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="f0.pca.probem.samples")
+```
+
+None of these samples concern me when looking at within subspecies PCAs.
+
+#### Check these samples in NGSadmix results
+
+```{r}
+# Make groups which will allow us to isolate the problematic samples and compare to subspecies/site
+exome_pc1.hc.c.rel$subsp.or.f0.pca.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% f0.pca.probem.samples, exome_pc1.hc.c.rel$Sample, exome_pc1.hc.c.rel$Subspecies)
+exome_pc1.hc.c.rel$site.or.f0.pca.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% f0.pca.probem.samples, exome_pc1.hc.c.rel$Sample, exome_pc1.hc.c.rel$Site)
+```
+
+##### All
+
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel, 
+              max.logs=max_logs_all, 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/f2.0.5x.all'), 
+              title="All Samples", 
+              Ks=2:10, 
+              group="subsp.or.f0.pca.probem.samples")
+```
+
+All look fine apart from perhaps Kor1-27 which struggles to be distinguished from western.
+
+##### Subspecies
+
+###### Central
+
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Central",], 
+              max.logs=max_logs_subsp[['c']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/c/f2.0.5x.c'), 
+              title="Central", 
+              Ks=2:10, 
+              group="site.or.f0.pca.probem.samples")
+
+exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Central" & exome_pc1.hc.c.rel$Sample %in% f0.pca.probem.samples,c('Sample', 'Community')]
+```
+
+- Con2-25, LCA-3-10 look fine
+
+###### Eastern
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Eastern",], 
+              max.logs=max_logs_subsp[['e']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/e/f2.0.5x.e'), 
+              title="Eastern", 
+              Ks=2:10, 
+              group="site.or.f0.pca.probem.samples")
+exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Eastern" & exome_pc1.hc.c.rel$Sample %in% f0.pca.probem.samples,c('Sample', 'Community')]
+```
+
+- Kab1-5 looks fine.
+- N186-8 and N262-4 sometimes have slightly more of a different ancestry to the major ancestry of their community but not drastically - I think they're fine.
+
+###### Nigeria-Cameroon
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Nigeria-Cameroon",], 
+              max.logs=max_logs_subsp[['n']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/n/f2.0.5x.n'), 
+              title="Nigeria-Cameroon", 
+              Ks=2:10, 
+              group="site.or.f0.pca.probem.samples")
+exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Nigeria-Cameroon" & exome_pc1.hc.c.rel$Sample %in% f0.pca.probem.samples,c('Sample', 'Community')]
+```
+
+- Nigeria-Cameroon results are harder to interpret.
+- I would say they give no reason to exclude Kor1-27.
+
+###### Western
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Western",], 
+              max.logs=max_logs_subsp[['w']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/w/f2.0.5x.w'), 
+              title="Western", 
+              Ks=2:10, 
+              group="site.or.f0.pca.probem.samples")
+exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Western" & exome_pc1.hc.c.rel$Sample %in% f0.pca.probem.samples, c('Sample', 'Community')]
+```
+
+- Fjn3-43, Fouta3-55, Gep1-62 look fine.
+
+### f0 PC1 Filter Summary
+- The three main samples which fail to cluster into subspecies in PCA and NGSadmix results (GB-14-05, Con2-57 and Fjn2-62) are f0 PC1 outlier with respect to their subspecies and so the species wide PC1 threshold may explain why these poor quality samples still slipped through the net.
+
+  - It is still odd that they pass coverage and human contamination filtering
+  
+- Looking at other samples which could be considered outliers with respect to their subspecies, I find that only one is of concern: Kor1-27
+
+  - This sample fails to cluster with Nigeria-Cameroon neatly but clusters fine with its community within Nigeria-Cameroon. 
+
+## Do they have extreme values of any statistic?
+
+### New statsitic: number of bases covered 
+I thought there was a chance that these bad samples may have missing data for lots of sites and may just have very high coverage for few sites pulling the average up. I calculated the number of sites with at least one read on myriad using the shell script `/home/ucfajos/analysis/phase1and2_exome_analysis/coverage/scripts/run_samtools.depth_number.of.bases.covered.sh`
+
+```{bash eval=FALSE, include=FALSE}
+#################################### INFO ####################################
+# This script is for calculatng the number of sites with at least 1 read.
+# I wanted to see if troublesome samples could be explaoined because they may have a high average coverage but lots of missing sites
+# This is done by running samtools depth which calculates read depth at all sites with any coverage.
+## By counting the number of rows in the file you have the number of bases covered.
+#################################### JOB ####################################
+# Load modules
+module load samtools/1.9/gnu-4.9.2
+# Parameters
+OUTPUT=/home/ucfajos/Scratch/output/phase1and2_exome_output/coverage/mapped.on.target/number.of.bases.covered/number.of.bases.covered.per.sample
+# Add flanks to exome coordinate BED
+## Remove header
+#sed '1,2d' /home/ucfajos/Scratch/data/exome_coordinates/S07604514/S07604514_Regions.bed \
+#>/home/ucfajos/Scratch/output/phase1and2_exome_output/target.regions_output/bed.files/S07604514_Regions_no.head.bed
+# cd into input directory so when looping over file names the directory structure isn't included
+cd /home/ucfajos/Scratch/data/phase1and2_exomes/BAM.mapped.on.target/
+# Make filelist so I know the order of the columns
+FILELIST=`ls *.bam`
+# Headers for output
+echo sample number_of_bases > $OUTPUT
+# For each BAM
+for FILE in `ls *.bam`;
+        do
+        # Prepare output file name
+        SAMPLE="${FILE/_exome.addRG.bam/}"
+        
+        # Samtoolsdepth
+        samtools depth \
+        /home/ucfajos/Scratch/data/phase1and2_exomes/BAM.mapped.on.target/${FILE} \
+        >/home/ucfajos/Scratch/output/phase1and2_exome_output/coverage/mapped.on.target/number.of.bases.covered/${SAMPLE}.depth
+
+        # Calculate the number of rows (number of bases with reads
+        NROW=`wc -l < /home/ucfajos/Scratch/output/phase1and2_exome_output/coverage/mapped.on.target/number.of.bases.covered/${SAMPLE}.depth`
+
+        # Add number of bases to output file
+        echo $SAMPLE $NROW >> $OUTPUT
+        
+        # rm depth file as they are quite large and no longer needed
+        rm /home/ucfajos/Scratch/output/phase1and2_exome_output/coverage/mapped.on.target/number.of.bases.covered/${SAMPLE}.depth
+        done
+#################################### DONE ####################################
+```
+
+### Denisty plots
+
+```{r out.width="33%"}
+# Add number of bases covered in BAM file list
+number.of.bases.covered=fread(paste0("../../coverage/exome/output/number.of.bases.covered/number.of.bases.covered.per.sample"))
+exome_pc1.hc.c.rel=merge(exome_pc1.hc.c.rel, number.of.bases.covered, by.x="Sample", by.y="sample")
+# Define poor quality samples which did not cluster correctly
+no.clust=c("Fjn2-62", "Con2-57", "GB-14-05", "Gep2-41", "Fjn3-24", "Kor1-27")
+# Get metadata for these samples
+meta.data_no.clust=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Sample %in% no.clust,]
+# Randomly sample some y values so sample names aren't all overlapping 
+y.values=sample(0:600, nrow(meta.data_no.clust))
+# Density plots
+for(stat in c("hDNA", "Average Fragment Size", "GQN (Fragmentation Score)", "Coverage", "Human Contamination (%)", "Num Position  (Human Contamination)","SD1 (Human Contamination)", "SD2  (Human Contamination)", "number_of_bases")){
+  plot=ggplot(NULL) + 
+    geom_density(data=exome_pc1.hc.c.rel, aes(x=.data[[stat]]), col='red', fill='red',  alpha=0.3, adjust=0.5) +
+    labs(title=paste0(stat, " Density"),x =stat, y = "Density") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    geom_segment(data=meta.data_no.clust, aes(x=.data[[stat]], y=0, xend=.data[[stat]], yend=-Inf), 
+                 colour=meta.data_no.clust$subsp.colour, linetype="dashed", alpha=0.25) +
+    geom_text(data=meta.data_no.clust, aes(x=.data[[stat]], y=0), 
+              label=meta.data_no.clust$Sample, colour=meta.data_no.clust$subsp.colour, size=5)
+  print(plot)
+}
+```
+
+Samples tend to have low coverage and high human contamination but they are still not the most extreme.
+
+### Coverage and Human Contamination
+
+Samples could narrowly pass both the coverage and human contamination thresholds and the combination of these two could cause issues?
+
+```{r out.width="50%", warning=FALSE}
+# Make column with sample names of only those which fail to cluster
+exome_pc1.hc.c.rel$no.clust=ifelse(exome_pc1.hc.c.rel$Sample %in% no.clust, exome_pc1.hc.c.rel$Sample, "")
+pca.plot=list()
+pca.plot[[1]]=ggplot(exome_pc1.hc.c.rel, aes(x=`Human Contamination (%)`, y=Coverage, label = no.clust)) +
+    theme_minimal()+ 
+    geom_text(size = 3) +
+    geom_point(alpha=0.25, colour='red')+
+    theme(plot.title = element_text(hjust = 0.5)) +
+    labs(x="Human Contamination (%)", y="Coverage") + 
+    ggtitle("Human Contamination vs Coverage")
+
+pca.plot[[2]]=ggplot(exome_pc1.hc.c.rel, aes(x=`Human Contamination (%)`, y=Coverage, label = no.clust)) +
+  theme_minimal()+ 
+  geom_text(size = 3) +
+  geom_point(alpha=0.25, colour='red')+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x="Human Contamination (%)", y="Coverage") + 
+  ggtitle("Human Contamination vs Coverage: Zoomed into Low Coverage") +
+  geom_vline(xintercept = min(exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Sample %in% no.clust,]$`Human Contamination (%)`)) +
+  geom_hline(yintercept = max(exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Sample %in% no.clust,]$Coverage)) +
+  ylim(0,10)
+for(plot in pca.plot){print(plot)}
+```
+
+We can see that thresholds for coverage and human contamination which would remove the problematic samples would also remove many samples which cluster correctly. This is therefore not feasible.
+
+### PCA
+
+I perform a PCA on the coverage and contamination staistics to see if a combination of these factors distinguishes the poor samples from the good ones.
+
+```{r out.width="50%"}
+# Select columns with stats
+exome.qual.stats=exome_pc1.hc.c.rel[,c("hDNA", "Average Fragment Size", "GQN (Fragmentation Score)", "Coverage", "Human Contamination (%)", "Num Position  (Human Contamination)")]
+# Perform PCA
+exome.qual.stats=scale(exome.qual.stats)
+p = prcomp(exome.qual.stats,retx=TRUE) 
+v = p$sdev^2
+pv = 100*v/sum(v)
+# Plot variance explained by each PC
+#barplot(pv,xlab="PC", ylab="% variance")
+# Plot contribution of each statistic to each PC
+#par(mar=par("mar")+ c(2,4,0,0))
+k = p$rotation
+pvs = sprintf("%s %.0f %s",colnames(k),pv,"%")
+#image.plot(k,xaxt="n",yaxt="n") 
+#axis(1,at=seq(0,1,length.out=ncol(k)),labels=pvs, las= 2,cex.axis=0.5) 
+#axis(2,at=seq(0,1,length.out=nrow(k)),labels= rownames(k),las= 2,cex.axis=0.5)
+# Add sample names
+PCA=cbind(exome_pc1.hc.c.rel[,c("Sample", "f2.pca.probem.samples")], as.data.frame(p$x))
+# Plat PCs
+pca.plots=list()
+# Plot PC1 vs PC2
+pca.plots[[1]]=ggplot(PCA, aes(x=PC1, y=PC2, label=f2.pca.probem.samples)) +
+  theme_minimal()+ 
+  geom_point(col='blue', alpha=0.25)+
+  geom_text(colour='red') + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5, size=20)) +
+  labs(x=pvs[1], y=pvs[2]) + 
+  ggtitle("PCA of Converage and Contamination Statistics")
+# Plot PC3 vs PC4
+pca.plots[[2]]=ggplot(PCA, aes(x=PC3, y=PC4, label=f2.pca.probem.samples)) +
+  theme_minimal()+ 
+  geom_point(col='blue', alpha=0.25)+
+  geom_text(colour='red') + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5, size=20)) +
+  labs(x=pvs[3], y=pvs[4]) + 
+  ggtitle("PCA of Coverage and Contamination Statistics")
+for(plot in pca.plots){print(plot)}
+```
+
+- The poor samples do not form a seperate cluster or lie at the extreme end of any PC.
+
+### Method for hDNA quantification
+
+This is the only categorical variable (apart from sample type where all samples are fecal).
+
+```{r out.width="50%"}
+# Get frequencies of each type for all samples and for only the problematic samples
+table(exome_pc1.hc.c.rel$`Method for hDNA quantification`)
+table(exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Sample %in% no.clust,]$`Method for hDNA quantification`)
+```
+
+- It is interesting that all problem samples used the qPCR method for hDNA quantification which is known to underestimate levels of hDNA compared to shotgun - could point to underestimation of levels of human contamination?
+
+  - However, I am not sure if this really means anything as I think human contamination is calculated independent of the hDNA estimates.
+
+  - The method uses samtools mpileup suggesting they work directly from the BAM files.
+
+  
+### Summary
+
+- I cannot find any statistic where the poor samples are outliers and so cannot remove them easily using a threshold
+
+# 3- Futher checks
+
+## Do we check if these bad samples are in the related samples?
+
+I thought perhaps that if a sample identified as being bad was also related to another then I could go back and just use the other related individual instead so we don't lose samples.
+
+I think this is a bad idea because if a sample is related to a bad one it suggest that it is either also the result of a sample swap or will also likley be bad. I therefore have decided not to do this.
+
+## Compare to chr21 results
+
+In the chr21 paper SOM, Uga2-81, CMNP1-24 and Kor1-35 were identified as likely swaps. I have independently also come to the conclusion that CMNP1-24 is a swap but did not notice the others. Here I plot the results again to see if Uga2-81 and Kor1-35 do look odd on second glance.
+
+```{r}
+# Add new problem samples
+chr21.probem.samples=c("Uga2-81", "Kor1-35")
+# Make column where the only Samples with names are the problem samples
+exome_pc1.hc.c.rel$chr21.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% chr21.probem.samples, exome_pc1.hc.c.rel$Sample, "")
+# Make groups which will allow us to isolate the problematic samples and compare to subspecies/site
+exome_pc1.hc.c.rel$subsp.or.chr21.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% chr21.probem.samples, exome_pc1.hc.c.rel$Sample, exome_pc1.hc.c.rel$Subspecies)
+exome_pc1.hc.c.rel$site.or.chr21.probem.samples=ifelse(exome_pc1.hc.c.rel$Sample %in% chr21.probem.samples, exome_pc1.hc.c.rel$Sample, exome_pc1.hc.c.rel$Site)
+```
+
+```{r out.width="50%"}
+# Plot Additional concerning samples
+plot.PCA(c("all"), 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="chr21.probem.samples")
+
+plot.PCA(c("e", "n"), 
+         exome_pc1.hc.c.rel,
+         paste0(pcangsd_output_dir, "/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="chr21.probem.samples")
+```
+
+PCAs show no evidence of sample swaps in these samples.
+
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel, 
+              max.logs=max_logs_all, 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/f2.0.5x.all'), 
+              title="All Samples", 
+              Ks=2:10, 
+              group="subsp.or.chr21.probem.samples")
+```
+
+- I see no evidence for sample swaps.
+
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Eastern",], 
+              max.logs=max_logs_subsp[['e']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/e/f2.0.5x.e'), 
+              title="All Samples", 
+              Ks=2:10, 
+              group="site.or.chr21.probem.samples")
+```
+
+- Uga2-81 shares most of its ancestry contributions with other Issa Vally samples with small amounts of ancestry shard with Ngogo (the community which it is supposed to have been switched with)
+
+```{r message=FALSE, warning=FALSE, out.width="25%"}
+plot.NGSadmix(meta.data=exome_pc1.hc.c.rel[exome_pc1.hc.c.rel$Subspecies=="Nigeria-Cameroon",], 
+              max.logs=max_logs_subsp[['n']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f2.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/n/f2.0.5x.n'), 
+              title="All Samples", 
+              Ks=2:10, 
+              group="site.or.chr21.probem.samples")
+```
+
+No evidence that Kor1-35 is a sample swap.
+
+### chr21 swaps conclusions
+
+- Exome results agree that CMNP1-24 is a swap.
+- I find no evidence for Uga2-81 or Kor1-35 being swaps.
+  - Claudia said it is unlikely there was a swap in chr21 and not exomes (or vice versa) but not impossible.
+  - She needs to check her lab book which is in the lab and it is currently lockdown (15/03/2021)
+  
+- My results clearly suggest that Gco4-2 in western is a sample swap but this was not removed in the chr21 anaylsis despite also failing to cluster with its community well.
+  - Claudia had this to say about Gco4-2: "In the case of Gco4-2 I did not exclude this sample but indeed it appears to be from another population (but since westerns were more similar to each other and geographically much closer I did not remove it, maybe I should have)."
+  - I think I should treat it as a swap.
+
+# 4-Conclusions
+
+### Samples to be removed (poor quality)
+
+#### Central
+
+##### GB-14-05
+- Fails to cluster cleanly with centrals in all samples PCA or NGSadmix.
+- Fails to cluster cleanly with community within subspecies.
+- A central f0 PC1 outlier.
+
+##### Con2-57
+- Fails to cluster cleanly with centrals in all samples PCA or NGSadmix.
+- Fails to cluster cleanly with community within subspecies.
+- A central f0 PC1 outlier.
+
+#### Western
+
+##### Gep2-41
+- Fails to cluster cleanly with community within subspecies.
+
+##### Fjn3-24
+- Fails to cluster cleanly with community within subspecies.
+
+##### Fjn2-62  
+- Fails to cluster cleanly with centrals in PCA or NGSadmix.
+- Oddly clusters fine within subspecies.
+  - The community it is from (Sobeya) is reported as a mix of various different ancestral populations and lies in the centre of the PCA, I therefore think that this doesn't exclude the possibility that this sample contains little information.
+  - Could its failure to cluster in the all samples PCA be due to the inclusion of the two bad centrals? - I have run it will bad samples removed and it is still reported as a mix of central and western - it should be removed.
+- A large western f0 PC1 outlier.
+
+### Samples on the edge
+#### Nigeria-Cameroon
+##### Kor1-27
+- Struggles to be distinguished from western in PCA and NGSadmix
+
+- Looks fine within subspecies
+
+### Sample swaps
+- Do we just remove these samples or reassign them?
+
+- If we reassign them I need to run ngsRelate again
+
+#### Central
+##### CMNP1-24
+- Sample swap
+  - Incorrectly assigned to Campo Maan.
+  - Really from Conkouati or Loango.
+    - Plotting PC3 vs PC4 ever so slightly favors the idea of Conkouati but it still doesn't lie within any polygon and I can't make any conclusions.
+  - Claudia identified this sample as coming from Conkouati using chr21.
+  
+#### Western
+##### Gco4-2
+- Sample swap
+  - Incorrectly assigned to Sangaredi
+  - Really from MtSangbe almost certainly - can I reassign it or must I remove it?
+
+# Decision
+
+#### Remove
+
+- GB-14-05
+
+- Con2-57
+
+- Fjn2-62
+
+- Gep2-41
+
+- Fjn3-24
+
+#### Reassign
+- Reassign by projecting them onto PCA made by all other samples 
+
+- CMNP1-24
+
+- Gco4-2
+
+
+# 5 - Remove poor quality samples, keep swaps (f3)
+
+```{r}
+f3.remove=c('GB-14-05', 'Con2-57', 'Fjn2-62', 'Gep2-41', 'Fjn3-24')
+f3_exome=exome_pc1.hc.c.rel[!(exome_pc1.hc.c.rel$Sample %in% f3.remove), ]
+```
+
+### Write BAM file lists
+
+We have now removed samples with contamination and/or low coverage and also removed related samples. I now want to run some basic demographic analyses to check that all samples cluster correctly with their communities. If samples fail to cluster correctly then there is an issue of either sample quality or sample swaps. I write BAM file lists so I can run ANGSD again and then run PCAngsd and NGSadmix. 
+
+#### All
+```{r}
+# Ensure it is ordered according to sample name
+f3_exome=f3_exome[order(f3_exome$Sample),]
+# All
+write.table(f3_exome$BAM.mapped.on.target, paste0(output_dir, "/bam.filelists/exome/f3_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel_rm.outliers/bam.filelist.all"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+#### Subspecies
+
+```{r}
+# Central
+write.table(f3_exome[f3_exome$Subspecies=="Central",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f3_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel_rm.outliers/bam.filelist.c"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Eastern
+write.table(f3_exome[f3_exome$Subspecies=="Eastern",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f3_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel_rm.outliers/bam.filelist.e"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Nigeria-Cameroon
+write.table(f3_exome[f3_exome$Subspecies=="Nigeria-Cameroon",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f3_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel_rm.outliers/bam.filelist.n"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Western
+write.table(f3_exome[f3_exome$Subspecies=="Western",]$BAM.mapped.on.target, 
+            paste0(output_dir, "/bam.filelists/exome/f3_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel_rm.outliers/bam.filelist.w"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+#### Specific bamfile list to work out where swapped central sample is from
+
+We can see from the PCA and NGSadmix results that CMNP1-24 is from either Conkouati or Loango but can't tell for sure. I here make a bam file list with the bams of CMNP1-24 and these two populations so I can run PCAngsd and NGSadmix with k=2 to assign the sample to the correct community.
+
+```{r}
+# CMNP1-24, Conkouati and Loango
+write.table(f3_exome[f3_exome$Sample=="CMNP1-24" | f3_exome$Community=="c.Conkouati" | f3_exome$Community=="c.Loango",]$BAM.mapped.on.target, paste0(output_dir, "/bam.filelists/exome/f3_pc1_hc.1pct_coverage.", min.cov, "x_rm.rel_rm.outliers/bam.filelist.c.Conkouati.c.Loango.CMNP1-24"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+
+```{bash eval=FALSE}
+scp -r output/bam.filelists/exome/f3_pc1_hc.1pct_coverage.*x_rm.rel_rm.outliers/ myriad:/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/
+```
+
+## Write metadata
+
+```{r}
+write.table(f3_exome, paste0(output_dir, "/f3/f3.metadata.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+```
+
+```{r}
+filter.table=rbind(filter.table, c("f3", paste0("Pop. Structure"),
+                                   nrow(f3_exome), 
+                                   paste0(round(nrow(f3_exome)/(as.numeric(filter.table[1, 'Number of Samples']))*100, digits = 2), "%")))
+filter.table
+# Write filter table
+write.csv(filter.table, paste0(output_dir, "/f3/f3.filtertable.csv"), row.names=F)
+```
+
+### Filter table Sankey diagram
+
+```{r}
+filter.table$`Number of Samples`=as.numeric(filter.table$`Number of Samples`)
+# Samples kept
+source=filter.table[1:(nrow(filter.table)-1), 'Filter']
+target=filter.table[2:nrow(filter.table), 'Filter']
+n.samples=filter.table[2:nrow(filter.table), 'Number of Samples']
+filtered.in.table=data.frame(source=source, target=target, value=n.samples)
+filtered.in.table
+# Add last (filtered out or not filtered out column)
+#filtered.in.table=rbind(filtered.in.table, 
+#                        c(filtered.in.table[nrow(filtered.in.table), 'target'], "Pass Filtering", filtered.in.table[nrow(filtered.in.table), 'value']))
+
+# Samples filtered out
+n.samples=c()
+for(i in 1:(nrow(filter.table)-1)){
+  n.samples[i]=filter.table[i, 'Number of Samples']-filter.table[(i+1), 'Number of Samples']
+}
+target=c("PC1<-0.01", "Human Cont.>1%", "Coverage<0.5x", "Relatives", "Pop. Structure Outliers")
+filtered.out.table=data.frame(source=source, target=target, value=n.samples)
+# Add last (filtered out or not filtered out column)
+#final.filtered.out=data.frame(source=target, target=replicate(length(target), "Filtered out"), value=n.samples)
+#filtered.out.table=rbind(filtered.out.table, final.filtered.out)
+
+# Combine into one table
+sankey.table=rbind(filtered.in.table, filtered.out.table)
+
+# Plot Sankey diagram
+# From these flows we need to create a node data frame: it lists every entities involved in the flow
+nodes <- data.frame(
+  name=c(as.character(sankey.table$source), 
+  as.character(sankey.table$target)) %>% unique()
+)
+ 
+# With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+sankey.table$IDsource <- match(sankey.table$source, nodes$name)-1 
+sankey.table$IDtarget <- match(sankey.table$target, nodes$name)-1
+ 
+# Make the Network
+my_color <- 'd3.scaleOrdinal() .domain(["white"]) .range(["white"])'
+
+sankey.plot=sankeyNetwork(Links = sankey.table, Nodes = nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "value", NodeID = "name", 
+              sinksRight=FALSE, colourScale=my_color, fontSize= 12, nodePadding=50)
+sankey.plot
+# save the widget
+saveWidget(sankey.plot, file=paste0(output_dir, "/f3/f3_filter.sankey.diagram.html"))
+```
+
+
+

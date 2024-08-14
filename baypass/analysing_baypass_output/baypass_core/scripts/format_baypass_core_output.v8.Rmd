@@ -1,0 +1,521 @@
+---
+title: "Format BayPass Core Output"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+The purpose of this script is to format the BayPass output files by adding SNP and population information to BayPass outputs (rather than having to do this at the top of every analysis script). 
+
+#### Annotate SNPs: summary_pi_xtx.out file
+
+- This file has a row per SNP with associated statistics that apply across all populations
+
+- I add gene annotations to all SNPs.
+
+- Because some SNPs correspond to multiple genes, the resulting file has a row per SNP annotation i.e. there are more rows than SNPs.
+
+#### Add population information: summary_pij.out
+
+- This file has a row per SNP per population with population allele frequency information.
+
+- I add population information to aid plotting population allele frequency stats.
+
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_core/')
+```
+
+#### Library
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(dplyr)
+library(tidyverse)
+
+# These only apply for the R chunks, bash chunks will need to be manually edited if you want to change the directory structure
+exome_baypass_out_dir="../../running_baypass/exome/output/"
+chr21_baypass_out_dir="../../running_baypass/chr21/output/"
+exome_allele_freq_dir="../../../allele_frequencies/exome/output/"
+chr21_allele_freq_dir="../../../allele_frequencies/chr21/output/"
+pop_structure_dir="../../../population_structure/exome/output/"
+output_dir="output/formatted_baypass_core_output/"
+gowinda_out="../../../gowinda/baypass_core/output/"
+```
+
+# Annotate SNPs
+
+## Add SNP coordiantes to make a .bed-like file
+
+```{r eval=FALSE}
+special_runs=c("")
+# Make BED files
+for(subsp in c('all', 'ce', 'n', 'w')){
+  if(subsp=='all'){file.subsp=''}else{file.subsp=paste0(".", subsp)}
+  if(subsp=="n"){miss.pops=0}else{miss.pops=0.3}
+  cat(subsp, "\n")
+  for(special_run in special_runs){
+    # Read data
+    xtx=read.table(paste0(exome_baypass_out_dir, "/f5", 
+                          file.subsp ,".pops_minInd.6or50pct_missing.pops.", miss.pops,"_minMAC2/core/f5", 
+                          file.subsp ,".pops_missing.pops.", miss.pops,"_minMAC2",special_run,"_summary_pi_xtx.out"), header = T)
+    snp=read.table(paste0(exome_allele_freq_dir, "/f5", 
+                          file.subsp ,".pops_minInd.6or50pct_missing.pops.", miss.pops,"/f5", 
+                          file.subsp ,".pops.all.chrs_missing.pops.", miss.pops,"_pop.allele.counts_minMAC2"), header = T)[,c("chr", "pos")]
+    if(nrow(xtx)!=nrow(snp)){stop("Input files do not have the same number of rows")}
+    # Combine BayPass output and genomic coordinates
+    snp$chr=as.numeric(gsub("chr", "", snp$chr))
+    ## The allele counts file with the SNP coordinates is in the same order as the BayPass input (and therefore the BayPass output)
+    ### NB: _pop.allele.counts files are the same as the BayPass input files only they contain the chr and pos for each row
+    snp.xtx=cbind(snp, xtx)
+    snp.xtx$pos = as.numeric(snp.xtx$pos)
+    # Make bed file
+    snp.xtx.bed=snp.xtx
+    ## Add end position column
+    snp.xtx.bed$end=snp.xtx.bed$pos+1
+    ## Order columns
+    snp.xtx.bed=snp.xtx.bed[,c(seq(1,2), ncol(snp.xtx.bed), seq(3,9))]
+    # Calculate empirical p values
+    ## In the few cases where two SNPs have the same XtX, the lowest rank is selected e.g. the rank for XtX values 8, 6, 6, 5 would be 1, 2, 2, 4
+    ### This happens very rarely so doesn't make much of a difference
+    snp.xtx.bed$empirical.p=rank(-snp.xtx.bed$XtXst, ties.method="min")/nrow(snp.xtx.bed)
+    ## Write
+    write.table(snp.xtx.bed, paste0(output_dir, "f5", file.subsp ,".pops_missing.pops.", miss.pops,"_minMAC2",special_run,"_summary_pi_xtx.out.bed"), 
+                sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+  }
+}
+```
+
+### GTF file
+
+The GTF file was downloaded from http://ftp.ensembl.org/pub/grch37/current/gtf/homo_sapiens/Homo_sapiens.GRCh37.87.chr.gtf.gz. The gene_id column was replaced with the gene_name column (which contained gene symbols) in `/Users/harrisonostridge/OneDrive - University College London/Projects/PanAf/phase1and2_exomes/gowinda/scripts/run_gowinda.v11.Rmd`. 
+
+## BEDtools intersect
+
+-wa and -wb flags mean the output is written with information from both files in it.
+
+-loj means "left outer join" so if no gene in the GTF overlaps with a SNP NA is reported.
+
+BEDtools manual (useful): https://bedtools.readthedocs.io/en/latest/content/tools/intersect.html 
+
+```{r}
+flank=5000
+```
+
+```{bash eval=FALSE}
+FLANK=5000
+cd ~/OneDrive\ -\ University\ College\ London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_core/
+# Add flanks
+awk -v OFS='\t' -v flank="$FLANK" '{print $1,$2,$3,$4-flank,$5+flank,$6,$7,$8,$9,$10}' ../../../gowinda/baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+> output/annotation/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_${FLANK}kb.flanks.gtf
+
+# BEDtools intersect
+## Output is formatted by selecting only relevant columns, removing duplicated lines (awk '!a[$0]++') and adding column headers
+## Missing pops 0.3
+for SPECIAL_RUN in '' 
+  do
+  DATASET=(f5.c.pops f5.e.pops)
+  MISS_POPS=(0.3 0.3)
+  for i in {0..2}
+    do
+    echo ${DATASET[$i]}
+    bedtools intersect \
+    -a output/formatted_baypass_core_output/${DATASET[$i]}_missing.pops.${MISS_POPS[$i]}_minMAC2${SPECIAL_RUN}_summary_pi_xtx.out.bed \
+    -b ../../../gowinda/baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_${FLANK}kb.flanks.gtf \
+    -wa \
+    -wb \
+    -loj \
+    | awk -v OFS='\t' '{print $1,$2,$4,$5,$6,$7,$8,$9,$10,$11,$NF}' | awk '!a[$0]++' \
+    | awk -v OFS='\t' 'BEGIN{print "chr", "pos", "MRK", "M_P", "SD_P", "M_XtX", "SD_XtX", "XtXst", "log10_pval", "empirical_p", "gene"}1' \
+    | sed 's/gene_id"//' | sed 's/";//' \
+    > output/formatted_baypass_core_output/${DATASET[$i]}_missing.pops.${MISS_POPS[$i]}_minMAC2${SPECIAL_RUN}_summary_pi_xtx.out_row.per.gtf.annot_${FLANK}bp.flanks
+    done
+  done
+```
+
+## Add results from other runs 
+
+### Exome
+
+I calculate empirical p values for the two additional runs of baypass (with different seeds) and add these columns so I can use them to inform my decision of selecting candidates.
+
+Note that I do not use empirical p values in the end, instead estimating FPR from non-genic-chr21.
+
+```{r eval=FALSE}
+special_runs=c("")
+for(subsp in c('all', 'ce', 'n', 'w')){
+  if(exists("xtx.ann.merge")){rm(list = c("xtx.ann.merge"))}
+  if(exists("xtx.cov.p")){rm(list = c("xtx.cov.p"))}
+  if(subsp=='all'){file.subsp=''}else{file.subsp=paste0(".", subsp)}
+  if(subsp=="n"){miss.pops=0}else{miss.pops=0.3}
+  cat(subsp, "\n")
+  for(special_run in special_runs){
+    # Read data
+    ## Focal run
+    xtx.ann=read.table(paste0(output_dir, "f5", 
+                          file.subsp ,".pops_missing.pops.", miss.pops,"_minMAC2",special_run,"_summary_pi_xtx.out_row.per.gtf.annot_",flank,"bp.flanks"), header = T)
+    ## Repeat runs
+    xtx.ann.r1=read.table(paste0(exome_baypass_out_dir, "/f5",
+                          file.subsp ,".pops_minInd.6or50pct_missing.pops.", miss.pops,"_minMAC2/core/f5", 
+                          file.subsp ,".pops_missing.pops.", miss.pops,"_minMAC2",special_run,"_seed.100_summary_pi_xtx.out"), header = T)
+    xtx.ann.r2=read.table(paste0(exome_baypass_out_dir, "/f5", 
+                          file.subsp ,".pops_minInd.6or50pct_missing.pops.", miss.pops,"_minMAC2/core/f5", 
+                          file.subsp ,".pops_missing.pops.", miss.pops,"_minMAC2",special_run,"_seed.10k_summary_pi_xtx.out"), header = T)
+    ## Coverage
+    coverage=data.frame(fread(paste0(exome_allele_freq_dir, "/f5", 
+                                   file.subsp, ".pops_minInd.6or50pct_missing.pops.", miss.pops,"/f5", file.subsp, 
+                                   ".pops.all.chrs_missing.pops.", miss.pops,"_minMAC2_coverage")))
+    coverage$chr=as.integer(gsub('chr', '', coverage$chr))
+    # Calculate empirical p values
+    ## In the few cases where two SNPs have the same XtX, the lowest rank is selected e.g. the rank for XtX values 8, 6, 6, 5 would be 1, 2, 2, 4
+    ### This happens very rarely so doesn't make much of a difference
+    xtx.ann.r1$empirical_p=rank(-xtx.ann.r1$XtXst, ties.method="min")/nrow(xtx.ann.r1)
+    xtx.ann.r2$empirical_p=rank(-xtx.ann.r2$XtXst, ties.method="min")/nrow(xtx.ann.r2)
+    # Add suffix
+    colnames(xtx.ann.r1)=c("MRK", paste0(colnames(xtx.ann.r1)[colnames(xtx.ann.r1)!='MRK'], ".r1"))
+    colnames(xtx.ann.r2)=c("MRK", paste0(colnames(xtx.ann.r2)[colnames(xtx.ann.r2)!='MRK'], ".r2"))
+    # Add repeat results columns
+    xtx.ann.merge=list(xtx.ann, xtx.ann.r1[,c("MRK", "XtXst.r1","empirical_p.r1")], xtx.ann.r2[,c("MRK", "XtXst.r2", "empirical_p.r2")]) %>% reduce(left_join, by = "MRK")
+    # Add median XtXst column 
+    xtx.ann.merge$XtXst.med=apply(xtx.ann.merge[c('XtXst', 'XtXst.r1', 'XtXst.r2')], 1, median, na.rm=T)
+    # Account for coverage
+    ## Add coverage data
+    ### Make snp x pop matrix of coverage  
+    coverage_matrix=as.matrix(coverage[,!(colnames(coverage) %in% c('chr', 'pos'))])
+    ### Replace missing values with 0
+    coverage_matrix[is.na(coverage_matrix)]=0
+    ### Get total coverage for each SNP
+    coverage=cbind(coverage[c('chr', 'pos')], data.frame(coverage=rowSums(coverage_matrix)))
+    ### Add to xtx data
+    xtx.ann.merge=merge(xtx.ann.merge, coverage, by=c('chr', 'pos'))
+    # Write
+    write.table(xtx.ann.merge[order(xtx.ann.merge$MRK),], 
+                paste0(output_dir, "f5", 
+                                  file.subsp ,".pops_missing.pops.", miss.pops,"_minMAC2",special_run,"_summary_pi_xtx.out_row.per.gtf.annot_",flank,"bp.flanks"), 
+                sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+  }
+}
+```
+
+### chr21 non-genic
+
+```{r eval=FALSE}
+special_runs=c('')
+for(subsp in c('all', 'ce', 'n', 'w')){
+  #if(exists("xtx.ann.merge")){rm(list = c("xtx.ann.merge"))}
+  #if(exists("xtx.cov.p")){rm(list = c("xtx.cov.p"))}
+  if(subsp=='all'){file.subsp=''}else{file.subsp=paste0(".", subsp)}
+  if(subsp=="n"){
+    miss.pops=0
+    miss.pops_2='0.0'
+  }else{
+    miss.pops=0.3
+    miss.pops_2=0.3
+  }
+  
+  for(special_run in special_runs){
+    xtx.file=paste0(chr21_baypass_out_dir, "/chr21.f7",
+                          file.subsp,".pops_minInd.6or50pct_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks/core/chr21.f7",
+                          file.subsp,".pops_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks",special_run,"_summary_pi_xtx.out")
+    if(file.exists(xtx.file)){
+      cat("Formatting",subsp, special_run, "\n")
+      # Read data
+      ## Focal run
+      xtx=fread(xtx.file, select=c('MRK', 'M_XtX', 'XtXst'))
+    
+      ## Repeat runs
+      xtx.r1=fread(paste0(chr21_baypass_out_dir, "/chr21.f7",
+                            file.subsp,".pops_minInd.6or50pct_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks/core/chr21.f7",
+                            file.subsp,".pops_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks",special_run,"_seed.100_summary_pi_xtx.out"), select=c('M_XtX', 'XtXst'))
+      xtx.r2=fread(paste0(chr21_baypass_out_dir, "/chr21.f7",
+                            file.subsp,".pops_minInd.6or50pct_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks/core/chr21.f7",
+                            file.subsp,".pops_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks",special_run,"_seed.10k_summary_pi_xtx.out"), select=c('M_XtX', 'XtXst'))
+      ## Add suffix
+      colnames(xtx.r1)=paste0(colnames(xtx.r1), ".r1")
+      colnames(xtx.r2)=paste0(colnames(xtx.r2), ".r2")
+      ## SNP coordinates
+      snps=fread(paste0(chr21_allele_freq_dir, "/chr21.f7",
+                            file.subsp,".pops_minInd.6or50pct_missing.pops.", miss.pops,"/chr21.f7",
+                            file.subsp,".pops_chr21_missing.pops.", miss.pops_2,"_pop.allele.counts_minMAC2.non-genic_1000bp.flanks"), select = c('chr', 'pos'))
+      xtx=cbind(snps, xtx, xtx.r1, xtx.r2)
+      ## Coverage
+      coverage=fread(paste0(chr21_allele_freq_dir, "/chr21.f7",
+                            file.subsp,".pops_minInd.6or50pct_missing.pops.", miss.pops,"/chr21.f7",
+                            file.subsp,".pops_chr21_missing.pops.", miss.pops,"_pop_minMAC2_coverage"))
+      coverage$chr=as.integer(gsub('chr', '', coverage$chr))
+      coverage$coverage=rowSums(coverage[!colnames(coverage) %in% c('chr', 'pos')], na.rm = TRUE)
+      xtx=merge(xtx, coverage[, c('chr', 'pos', 'coverage')], by=c('chr', 'pos'))
+      # Add median XtXst column 
+      xtx$XtXst.med=apply(xtx[,c('XtXst', 'XtXst.r1', 'XtXst.r2')], 1, median, na.rm=T)
+      
+      # Write
+      write.table(xtx[order(xtx$MRK),], 
+                  paste0(output_dir, "chr21.f7", 
+                                    file.subsp ,".pops_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks",special_run,"_summary_pi_xtx_formatted"), 
+                  sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+    }
+  }
+}
+```
+
+
+#### Test to see how many non-genic-chr21 SNPs are 'genic'
+
+This is just as a sanity check and to see the sort of 'genes' these SNPs lie in that are not 1-1 homologs in the GTF file.
+
+##### Add SNP coordiantes to make a .bed-like file
+
+```{r}
+special_runs=c("")
+# Make BED files
+for(subsp in c('all', 'ce', 'n', 'w')){
+  if(subsp=='all'){file.subsp=''}else{file.subsp=paste0(".", subsp)}
+  if(subsp=="n"){
+    miss.pops='0'
+    miss.pops2='0.0'
+  }else{
+    miss.pops='0.3'
+    miss.pops2='0.3'
+  }
+  
+  cat(subsp, "\n")
+  for(special_run in special_runs){
+    # Read data
+    xtx=read.table(paste0(chr21_baypass_out_dir, "/chr21.f7", 
+                          file.subsp ,".pops_minInd.6or50pct_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks/core/chr21.f7", 
+                          file.subsp ,".pops_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks",special_run,"_summary_pi_xtx.out"), header = T)
+    snp=read.table(paste0(chr21_allele_freq_dir, "/chr21.f7", 
+                          file.subsp ,".pops_minInd.6or50pct_missing.pops.", miss.pops,"/chr21.f7", 
+                          file.subsp ,".pops_chr21_missing.pops.", miss.pops2,"_pop.allele.counts_minMAC2.non-genic_1000bp.flanks"), header = T)[,c("chr", "pos")]
+    if(nrow(xtx)!=nrow(snp)){stop("Input files do not have the same number of rows")}
+    paste0(chr21_allele_freq_dir, "/chr21.f7", 
+                          file.subsp ,".pops_minInd.6or50pct_missing.pops.", miss.pops,"/chr21.f7", 
+                          file.subsp ,".pops.all.chrs_missing.pops.", miss.pops)
+    # Combine BayPass output and genomic coordinates
+    snp$chr=as.numeric(gsub("chr", "", snp$chr))
+    ## The allele counts file with the SNP coordinates is in the same order as the BayPass input (and therefore the BayPass output)
+    ### NB: _pop.allele.counts files are the same as the BayPass input files only they contain the chr and pos for each row
+    snp.xtx=cbind(snp, xtx)
+    snp.xtx$pos = as.numeric(snp.xtx$pos)
+    # Make bed file
+    snp.xtx.bed=snp.xtx
+    ## Add end position column
+    snp.xtx.bed$end=snp.xtx.bed$pos+1
+    ## Order columns
+    snp.xtx.bed=snp.xtx.bed[,c(seq(1,2), ncol(snp.xtx.bed), seq(3,9))]
+    # Calculate empirical p values
+    ## In the few cases where two SNPs have the same XtX, the lowest rank is selected e.g. the rank for XtX values 8, 6, 6, 5 would be 1, 2, 2, 4
+    ### This happens very rarely so doesn't make much of a difference
+    snp.xtx.bed$empirical.p=rank(-snp.xtx.bed$XtXst, ties.method="min")/nrow(snp.xtx.bed)
+    ## Write
+    write.table(snp.xtx.bed, paste0(output_dir, "chr21.f7", file.subsp ,".pops_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks",special_run,"_summary_pi_xtx.out.bed"), 
+                sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+  }
+}
+```
+
+```{r}
+flank=1000
+```
+
+```{bash}
+FLANK=1000
+cd ~/OneDrive\ -\ University\ College\ London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_core/
+# Add flanks
+awk -v OFS='\t' -v flank="$FLANK" '{print $1,$2,$3,$4-flank,$5+flank,$6,$7,$8,$9,$10}' ../../../gowinda/baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+> output/annotation/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_${FLANK}kb.flanks.gtf
+
+# BEDtools intersect
+## Output is formatted by selecting only relevant columns, removing duplicated lines (awk '!a[$0]++') and adding column headers
+## Missing pops 0.3
+for SPECIAL_RUN in '' 
+  do
+  DATASET=(chr21.f7.pops chr21.f7.ce.pops chr21.f7.n.pops chr21.f7.w.pops)
+  MISS_POPS=(0.3 0.3 0 0.3)
+  for i in {0..3}
+    do
+    echo ${DATASET[$i]}
+    bedtools intersect \
+    -a output/formatted_baypass_core_output/${DATASET[$i]}_missing.pops.${MISS_POPS[$i]}_minMAC2.non-genic_1000bp.flanks${SPECIAL_RUN}_summary_pi_xtx.out.bed \
+    -b output/annotation/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_${FLANK}kb.flanks.gtf \
+    -wa \
+    -wb \
+    -loj \
+    | awk -v OFS='\t' '{print $1,$2,$4,$5,$6,$7,$8,$9,$10,$11,$NF}' | awk '!a[$0]++' \
+    | awk -v OFS='\t' 'BEGIN{print "chr", "pos", "MRK", "M_P", "SD_P", "M_XtX", "SD_XtX", "XtXst", "log10_pval", "empirical_p", "gene"}1' \
+    | sed 's/gene_id"//' | sed 's/";//' \
+    > output/formatted_baypass_core_output/${DATASET[$i]}_missing.pops.${MISS_POPS[$i]}_minMAC2.non-genic_1000bp.flanks${SPECIAL_RUN}_summary_pi_xtx.out_row.per.gtf.annot_${FLANK}bp.flanks
+    done
+  done
+```
+
+
+```{r}
+xtx_chr21_ann=list()
+for(subsp in c('all', 'ce', 'n', 'w')){
+  #if(exists("xtx.ann.merge")){rm(list = c("xtx.ann.merge"))}
+  #if(exists("xtx.cov.p")){rm(list = c("xtx.cov.p"))}
+  if(subsp=='all'){file.subsp=''}else{file.subsp=paste0(".", subsp)}
+  if(subsp=="n"){
+    miss.pops=0
+    miss.pops_2='0.0'
+  }else{
+    miss.pops=0.3
+    miss.pops_2=0.3
+  }
+  cat(subsp, '\n')
+  xtx_chr21_ann[[subsp]]=fread(paste0(output_dir, "/chr21.f7",
+                          file.subsp,".pops_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks_summary_pi_xtx.out_row.per.gtf.annot_",flank,"bp.flanks"))
+  
+  print(unique(xtx_chr21_ann[[subsp]]$gene))
+
+}
+```
+
+```{r}
+gtf=fread(paste0(gowinda_out, "/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync.gtf"))
+# This hack prevents negative values and only affects 34 rows (all but one being mitochondrial)
+#gtf[gtf$V4<=5000, 'V4']
+write.table(gtf, paste0("output/annotation/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync.gtf"), 
+            sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+```{bash}
+FLANK=1000
+cd ~/OneDrive\ -\ University\ College\ London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_core/
+# Add flanks
+## awk -F'\t' 'BEGIN {OFS="\t"} {if ($4 < 0) $4=0; print} ensures there are no negative values
+awk -v OFS='\t' -v flank="$FLANK" '{print $1,$2,$3,$4-flank,$5+flank,$6,$7,$8,$9,$10}' output/annotation/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync.gtf \
+| awk -F'\t' 'BEGIN {OFS="\t"} {if ($4 < 0) $4=1; print}' > \
+output/annotation/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_${FLANK}kb.flanks.gtf
+
+# BEDtools intersect
+## Output is formatted by selecting only relevant columns, removing duplicated lines (awk '!a[$0]++') and adding column headers
+## Missing pops 0.3
+for SPECIAL_RUN in '' 
+  do
+  DATASET=(chr21.f7.pops chr21.f7.ce.pops chr21.f7.n.pops chr21.f7.w.pops)
+  MISS_POPS=(0.3 0.3 0 0.3)
+  for i in {0..4}
+    do
+    echo ${DATASET[$i]}
+    bedtools intersect \
+    -a output/formatted_baypass_core_output/${DATASET[$i]}_missing.pops.${MISS_POPS[$i]}_minMAC2.non-genic_1000bp.flanks${SPECIAL_RUN}_summary_pi_xtx.out.bed \
+    -b output/annotation/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_${FLANK}kb.flanks.gtf \
+    -wa \
+    -wb \
+    -loj \
+    | awk -v OFS='\t' '{print $1,$2,$4,$5,$6,$7,$8,$9,$10,$11,$NF}' | awk '!a[$0]++' \
+    | awk -v OFS='\t' 'BEGIN{print "chr", "pos", "MRK", "M_P", "SD_P", "M_XtX", "SD_XtX", "XtXst", "log10_pval", "empirical_p", "gene"}1' \
+    | sed 's/gene_id"//' | sed 's/";//' \
+    > output/formatted_baypass_core_output/${DATASET[$i]}_missing.pops.${MISS_POPS[$i]}_minMAC2.non-genic_1000bp.flanks${SPECIAL_RUN}_summary_pi_xtx.out_row.per.gtf.annot_${FLANK}bp.flanks_ALL_GENES
+    done
+  done
+```
+
+
+```{r}
+flank=1000
+xtx_chr21_ann=list()
+for(subsp in c('all', 'ce', 'n', 'w')){
+  #if(exists("xtx.ann.merge")){rm(list = c("xtx.ann.merge"))}
+  #if(exists("xtx.cov.p")){rm(list = c("xtx.cov.p"))}
+  if(subsp=='all'){file.subsp=''}else{file.subsp=paste0(".", subsp)}
+  if(subsp=="n"){
+    miss.pops=0
+    miss.pops_2='0.0'
+  }else{
+    miss.pops=0.3
+    miss.pops_2=0.3
+  }
+  cat(subsp, '\n')
+  xtx_chr21_ann[[subsp]]=fread(paste0(output_dir, "/chr21.f7",
+                          file.subsp,".pops_missing.pops.", miss.pops,"_minMAC2.non-genic_1000bp.flanks_summary_pi_xtx.out_row.per.gtf.annot_",flank,"bp.flanks_ALL_GENES"))
+  
+  genes=unique(xtx_chr21_ann[[subsp]]$gene)
+  cat("Number of genes:", length(genes))
+  print(head(genes,11))
+  cat("Proportion of rows assigned to a gene:", sum(xtx_chr21_ann[[subsp]]$gene!='.')/length(unique(xtx_chr21_ann[[subsp]]$MRK)), "\n")
+}
+```
+
+Just by googling a few of these I can see many are pseudo genes etc.
+
+This does represent about 30% of snps though 
+
+# Add population information
+
+## Meta data
+
+I take the mean latitude and longitudes from each individual to get the coordinates for a population. This means for combined communities, the mean coordinates will be weighted by the number of samples from each community. I could easily change this to an unweighed mean by only using unique columns (so each community is counted once). This is only used for plotting maps so it doesn't really matter.
+
+```{r eval=FALSE}
+# Read
+meta.data=fread(paste0(pop_structure_dir, "/f5.metadata.with.populations.csv"))[,c("Population", "Subspecies", "Longitude", "Latitude")]
+# I take the mean latitude and longitudes from each individual to get the coordinates for a population. this means for combined communities, the mean coordinates will be weighted by the number of samples from each community. 
+pop.meta.data=aggregate(meta.data[, c("Longitude", "Latitude")], list(meta.data$Population), mean)
+colnames(pop.meta.data)=c("Population", "Longitude", "Latitude")
+# Add subspecies column back
+pop.meta.data=merge(unique(meta.data[,c("Population", "Subspecies")]), pop.meta.data)
+```
+
+## Populations
+
+Selecting populations in this way is required to only select those which we actually included in the BayPass analysis (had a sample size post-filtering >7).
+
+```{r eval=FALSE}
+inds.per.pop=fread(paste0(pop_structure_dir, "/freq.per.pop.csv"))
+inds.per.pop=inds.per.pop[order(inds.per.pop$Population),]
+pops=inds.per.pop[inds.per.pop$Freq>7,]$Population
+pops=pops[order(pops)]
+```
+
+## Format pij file
+
+This file has a column per SNP per population. Here I add population information: population name, subspecies, Latitude and Longitude. This will make it much easier to plot population allele frequencies.
+
+```{r eval=FALSE}
+for(subsp in list("c", "e")){
+  if('all' %in% subsp){
+    file.subsp=""
+    populations=pops
+    } else {
+      # If one or more subspecies are given (as a vector) combine the subsps letters if there are multiple. If only one subspecies is provided nothing changes
+      file.subsp=paste(subsp,collapse="")
+      file.subsp=paste0(".", file.subsp)
+      # Get a list of populations in subspecies of interest (from total population list)
+      populations=c()
+      ## For each subspecies provided
+      for(i in subsp){
+        ### Select populations which start with the subspecies letter and combine to give a list of populations from all subsps asked for
+        populations=c(populations, pops[grepl(paste0('^', i, "."), pops)])
+      }
+    }
+  # Read data
+  if('n' %in% subsp){miss_pops=0}else(miss_pops=0.3)
+  pij=fread(paste0(exome_baypass_out_dir, "/f5",
+                   file.subsp, ".pops_minInd.6or50pct_missing.pops.", miss_pops, "_minMAC2/core/f5", 
+                   file.subsp , ".pops_missing.pops.", miss_pops,"_minMAC2_summary_pij.out"))
+  xtx.ann=read.table(paste0(output_dir, "f5", 
+                        file.subsp ,".pops_missing.pops.", miss_pops,"_minMAC2_summary_pi_xtx.out_row.per.gtf.annot_",flank,"bp.flanks"), header = T)
+  # Add SNP coordinates
+  pij=merge(unique(xtx.ann[c('MRK', 'chr', 'pos')]), pij, by='MRK', all.y=TRUE)
+  
+  if(length(populations)!=length(unique(pij$POP))){stop("Population list is not the same length as the number of populations in BayPass file")}
+  # Select metadata for the correct populations
+  pop.meta.data_subsp=pop.meta.data[pop.meta.data$Population %in% populations,]
+  # Order by population name and add column of numbers, these will now correspond to the POP column in the summary_pij.out files
+  pop.meta.data_subsp=pop.meta.data_subsp[order(pop.meta.data_subsp$Population),]
+  pop.meta.data_subsp$POP=1:length(populations)
+  # Merge to assign population names to summary_pij.out file
+  pij=merge(pij, pop.meta.data_subsp, by='POP', all.x=T)
+  # Order by SNP (rather than population)
+  pij=pij[order(pij$MRK),]
+  # Write file
+  write.table(pij, paste0(output_dir, "f5", file.subsp , ".pops_missing.pops.", miss_pops, "_minMAC2_summary_pij.out_pop.info"), 
+              sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+}
+```
+  

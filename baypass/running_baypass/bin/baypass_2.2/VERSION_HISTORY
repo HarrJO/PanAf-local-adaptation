@@ -1,0 +1,40 @@
+-----------  Version 2.2   ----------
+- 2019-10-22                        -
+-------------------------------------
+
+- Computation of contrasts of standardized allele frequencies and XtX* (an calibrated estimator of the XtX) (cf. Olazcuaga et al., 2019)
+- Including extensive checks of the input files. The -npop option is no more necessary but maintained for compatibility with previous version
+- Simplifications of some output files (e.g., removing acceptance rates and adjusted deltas) and display during the run (including also an estimation of remaining time)
+- Additional cleaning of the code
+- Slight modification of the Makefile to handle newer versions of ifort and gfortran compilers
+- Two additionnal funtions in baypass_utils.R (simulate.PCcorrelated.covariate and plot.omega) 
+- Editing of the manual
+
+-----------  Version 2.1   ----------
+- 2015-12-09                        -
+-------------------------------------
+
+- Fixing bugs related to initialization of some variables (cur_stream, opt_aux, dum_char_array, opt_pheno and opt_reg) that lead on some OS to seg. fault and/or highly suboptimal performances
+- Fixing a bug in the sampling of allele count for missing data in PoolSeq data that sometimes lead to sampling of negative count in v2.0 (!)
+- Cleaning the code from unnecessary options
+- Slight modification of the Makefile
+
+-----------  Version 2.0  -----------
+- 2015-10-02                        -
+-------------------------------------
+
+- Major modification: Parallelization of the code (using OpenMP and a parallelized MT RNG)
+
+-----------  Version 1.01 -----------
+- 2015-09-09                        -
+-------------------------------------
+
+- Minor modifications: Maximum eBP values set to 15.1 (instead of Infinity)
+- Correction of typos in the manual and help menu
+
+-----------  Version 1.0  -----------
+- 2015-08-04                        -
+-------------------------------------
+
+- First released version
+

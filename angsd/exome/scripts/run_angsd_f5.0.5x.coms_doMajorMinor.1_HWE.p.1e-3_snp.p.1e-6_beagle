@@ -1,0 +1,57 @@
+#!/bin/bash -l
+
+# Job name
+#$ -N angsd_f5.0.5x.coms_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_beagle
+
+# Set working directory
+#$ -wd /home/ucfajos/Scratch/output/phase1and2_exome_output/angsd_output/mapped.on.target/f5.0.5x.coms_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_beagle
+
+# Time requested
+#$ -l h_rt=48:00:00
+
+# RAM for each core/thread (integer followed by M, G, or T)
+#$ -l mem=5G
+
+# TMPDIR space needed (default is 10G)
+#$ -l tmpfs=10G
+
+# Number of cores
+#$ -pe smp 10
+
+#################################### INFO ####################################
+# This script is run with doMajorMinor 1 (to ensure no excess of high freq DAFs) and a HWE filter (to ensure no bump at 0.5 due to paralogs).
+# This is run on communities with daSAF so I can calculate Fst between communities which I merged
+#################################### JOB ####################################
+
+# Load modules
+module load htslib
+
+# Subspecies; c=central, e=eastern, n=Nigeria-Cameroon, w=western
+for POP in c.Bateke c.CampoMaan c.Conkouati c.Goualougo c.Invindo c.LaBelgique c.Loango c.Lope c.MtsdeCristal e.Bili e.Budongo e.Bwindi e.Chinko e.Gishwati e.IssaValley e.Ituri e.Kabogo e.Ngiri e.Ngogo e.Nyungwe e.Regomuki e.RubiTele n.Gashaka n.Korup n.Mbe n.MtCameroon w.Azagny w.Bafing w.Bakoun w.Bia w.Boe w.BoundialeOdienne w.Comoe2 w.ComoeCNPN w.ComoeEAST w.ComoeGEPRENAF w.ComoeWEST w.Dindefelo w.Djouroutou w.EastNimba w.Grebo w.Kayan w.Loma w.MtSangbe w.OutambaKilimi w.Sangaredi w.Sapo w.Sobeya w.Sobory w.TaiEco w.TaiR w.ZooAnkasa
+	do
+	/usr/bin/time --verbose \
+	~/bin/angsd/angsd \
+	-b /home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel/bam.filelist.${POP} \
+	-out ${POP}/${POP} \
+	-ref ~/Scratch/data/ref_genomes/hg19.fa \
+	-anc ~/Scratch/data/ref_genomes/homo_sapiens_ancestor_GRCh37_e71/homo_sapiens_ancestor_fullgenome.fa \
+	-uniqueOnly 1 \
+	-remove_bads 1 \
+	-only_proper_pairs 1 \
+	-trim 0 \
+	-C 50 \
+	-baq 1 \
+	-skipTriallelic 1 \
+	-GL 2 \
+	-minMapQ 30 \
+	-nThreads 10 \
+	-doMajorMinor 1 \
+	-doMaf 2 \
+	-SNP_pval 0.000001 \
+	-doSnpStat 1 \
+	-doHWE 1 \
+	-minHWEpval 0.001 \
+	-doSaf 1
+done
+
+#################################### DONE ####################################

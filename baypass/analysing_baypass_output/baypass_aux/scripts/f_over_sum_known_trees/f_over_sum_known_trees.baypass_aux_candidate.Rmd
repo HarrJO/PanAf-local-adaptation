@@ -1,0 +1,749 @@
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_aux/') 
+```
+
+#### Parameters
+
+```{r}
+subsps=c('all', 'ce', 'w')
+env_data='f_over_sum_known_trees'
+habitat_col='grey'
+fprs=c(0.005, 0.001, 0.0005)
+chr21=TRUE
+flanks=1000
+```
+
+```{r echo=FALSE}
+if(chr21){
+  title_null="chr21 null"
+}else{
+  title_null="random shuffling null"
+}
+```
+
+---
+title: "`r paste0("BayPass AUX Select Candidates - ", env_data, ", ", title_null)`"
+subtitle: "`r paste0("Subspecies datasets: ", paste(subsps, collapse = ", "))`"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Here I extract candidates from running the BayPass AUX model with habitat classifications from Aleman et al. (2020) (using 4 categories) for all subspecies datasets.
+
+Environmental data input files were made with `/Users/harrisonostridge/OneDrive - University College London/Projects/PanAf/environmental_data/scripts/1.extract_environmental_and_behavioural_data.v3.Rmd` and `/Users/harrisonostridge/OneDrive - University College London/Projects/PanAf/environmental_data/scripts/2.format_env_file.Rmd`.
+
+BayPass was run on myriad with scripts in `myriad:analysis/phase1and2_exome_analysis/baypass/scripts/mapped.on.target/`. BayPass was run three times with different seeds.
+
+BayPass output files were formatted with `/Users/harrisonostridge/OneDrive - University College London/Projects/PanAf/phase1and2_exomes/baypass/baypass_aux/scripts/format_output/format_baypass_aux_output.ipynb` where SNP coordinates, gene annotations and results from multiple independent runs were added. Statistics with no suffix represent results from the focal run (e.g. 'M_Beta'), and statistics from the the two repeat runs have the suffixes '.r1' and '.r2' (e.g. 'M_Beta.r1' and 'M_Beta.r2'). Median values have also been calculated. I also add the results from random runs used to generate nulls.
+
+#### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(dplyr)
+library(ggplot2)
+library(ggVennDiagram)
+library(psych)
+library(tidyverse)
+library(cowplot)
+library(reshape)
+library(ggpattern)
+# Call scripts containing custom functions 
+source("../scripts/baypass_tools.R")
+source("../baypass_core/scripts/candidate_allele_frequency_patterns.R")
+source("scripts/baypass_aux_tools.R")
+
+# In
+env_dir="../../../environmental_data/output/"
+baypass_core_out_dir="../baypass_core/output/formatted_baypass_core_output/"
+formatted_aux_out_dir="output/formatted_baypass_aux_output/"
+ac_in="../../../allele_frequencies/"
+# Out
+formatted_aux_out_fprs_dir="output/baypass_aux_output_with_fprs/"
+gowinda_snp_file_dir="../../../gowinda/baypass_aux/output/gowinda_input/snp_files/"
+```
+
+#### Read in data
+
+```{r echo=FALSE}
+omega_run=''
+
+## Environmental data file
+env_file=read.csv(paste0(env_dir, "/meta_data.env.pops.imputed.csv"))
+### Make a version with a single row per population for plotting (average latitudes and longitudes across communities in a population are used)
+env_file.pops=unique(env_file[,c("Population", "Latitude", "Longitude")])
+env_file.pops=aggregate(env_file.pops[, c("Latitude", "Longitude")], list(env_file.pops$Population), mean)
+colnames(env_file.pops)=c("Population", "Latitude", "Longitude")
+
+# Subspecies specific files
+ac=list()
+ann=list()
+betai=list()
+allele.freq=list()
+Pdelta=list() #
+cov.in=list()
+subsp.col=list()
+coverage=list()
+random_reps=list()
+xtx=list()
+## chr21
+betai_chr21=list()
+Pdelta_chr21=list()
+
+for(subsp in subsps){
+  cat("-", subsp, "\n")
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  ## Allele counts
+  ac[[subsp]][['exome']]=fread(paste0(ac_in, "/exome/output/f5", subsp.file,
+          ".pops_minInd.6or50pct_missing.pops.", miss.pop,"/f5",subsp.file,".pops.all.chrs_missing.pops.", 
+          miss.pop,"_pop.allele.counts_minMAC2"))
+  ac[[subsp]][['chr21']]=fread(paste0(ac_in, "/chr21/output/chr21.f7", subsp.file,
+          ".pops_minInd.6or50pct_missing.pops.", miss.pop,"/chr21.f7",subsp.file,".pops_chr21_missing.pops.",
+          miss.pop,"_pop.allele.counts_minMAC2.non-genic_1000bp.flanks"))
+  ## Allele frequencies
+  allele.freq[[subsp]]=fread(paste0(baypass_core_out_dir, "/f5", subsp.file,
+          ".pops_missing.pops.", miss.pop,"_minMAC2_summary_pij.out_pop.info"))
+  ### Population names
+  pops=unique(allele.freq[[subsp]]$Population)
+  pops=pops[order(pops)]
+  #### Population colours (according to subspecies)
+  subsp.col[[subsp]]=c()
+  for(pop in pops){
+    if(startsWith(pop, "c.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "green3")}
+    if(startsWith(pop, "e.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "darkorange")}
+    if(startsWith(pop, "n.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "red")}
+    if(startsWith(pop, "w.")){subsp.col[[subsp]]=c(subsp.col[[subsp]], "blue")}
+  }
+  ## Core output
+  xtx[['exome']][[subsp]]=fread(paste0("../../running_baypass/exome/output/f5", subsp.file,
+                                       ".pops_minInd.6or50pct_missing.pops.",miss.pop,"_minMAC2/core/f5", subsp.file, 
+                                       ".pops_missing.pops.",miss.pop,"_minMAC2_summary_pi_xtx.out"))
+  #xtx[['exome']][[subsp]]$chr_pos=paste(xtx[['exome']][[subsp]]$chr, xtx[['exome']][[subsp]]$pos, sep="_")
+  xtx[['chr21']][[subsp]]=fread(paste0("../../running_baypass/chr21/output/chr21.f7", subsp.file,
+                                       ".pops_minInd.6or50pct_missing.pops.",miss.pop,"_minMAC2.non-genic_1000bp.flanks/core/chr21.f7", subsp.file, 
+                                       ".pops_missing.pops.",miss.pop,"_minMAC2.non-genic_1000bp.flanks_summary_pi_xtx.out"))
+  #xtx[['chr21']][[subsp]]$chr_pos=paste(xtx[['chr21']][[subsp]]$chr, xtx[['chr21']][[subsp]]$pos, sep="_")
+  ## Read BayPass AUX output
+  ### Annotation
+  ann[[subsp]]=fread(paste0(baypass_core_out_dir, "/f5",
+                            subsp.file,".pops_missing.pops.", miss.pop,"_minMAC2_summary_pi_xtx.out_row.per.gtf.annot_5000bp.flanks"),
+                     select=c('chr', 'pos', 'gene'))
+  ann[[subsp]][ann[[subsp]]$gene=='.','gene']=NA
+  ### Not annotated Betai
+  betai[[subsp]]=fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, "_summary_betai.out_all_runs.gz"))
+  betai[[subsp]]$chr_pos=paste(betai[[subsp]]$chr, betai[[subsp]]$pos, sep="_")
+  ### Pdelta file
+  Pdelta[[subsp]]=fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, "_summary_Pdelta.out_all_runs"))
+  covs=unique(Pdelta[[subsp]]$COVARIABLE_name)
+  ## Read in covariable input files - real values and random ones
+  ### Get the number of random reps from column headers
+  random_reps[[subsp]]=colnames(betai[[subsp]])[grepl("RANDOM", colnames(betai[[subsp]]))]
+  random_reps[[subsp]]=as.numeric(unique(gsub(".*RANDOM_rep", "", random_reps[[subsp]])))
+  if(chr21){reps='Real'}else{reps=c('Real', random_reps[[subsp]])}
+  for(rep in reps){
+    if(rep=='Real'){rep.name=''}
+    if(rep %in% random_reps[[subsp]]){rep.name=paste0("_Random_rep", rep)}
+    cov.in[[subsp]][[rep]]=fread(paste0(formatted_aux_out_dir, "/f5",
+                         subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", env_data, rep.name, "_covariate.std"))
+
+    ### Add covariable names as row names (alphabetical order)
+    names(habitat_col)=covs[order(covs)]
+    rownames(cov.in[[subsp]][[rep]])=covs[order(covs)]
+    ### Add population names as column names (alphabetical order)
+    colnames(cov.in[[subsp]][[rep]])=pops
+  }
+  # chr21
+  if(chr21){
+    cat("Read chr21\n")
+    ### Betai file
+    betai_chr21[[subsp]]=fread(paste0(formatted_aux_out_dir, "/chr21.f7",
+                           subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2.non-genic_",flanks,"bp.flanks",omega_run,"_", env_data, "_summary_betai.out_all_runs.gz"))
+    ### Pdelta file
+    Pdelta_chr21[[subsp]]=fread(paste0(formatted_aux_out_dir, "/chr21.f7",
+                           subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2.non-genic_",flanks,"bp.flanks",omega_run,"_", env_data, "_summary_Pdelta.out_all_runs"))
+  }
+}
+
+subsp_names=list(
+  'all'='All subspecies',
+  'ce'='Central-Eastern',
+  'n'='Nigeria-Cameroon',
+  'w'='Western'
+)
+```
+
+# Candidate SNPs
+
+### Beta - effect size and direction
+
+- An absolute beta value of more than 0.2 was considered "strongly associated" in the BayPass paper.
+
+### Bayes Factor - measure of significance 
+
+- Jeffreys’ rule (Jeffreys 1961); >10 strong evidence, >15 - very strong evidence, >20 - decisive evidence.
+
+# Use Median BFs to Select Candidates
+
+```{r echo=FALSE, out.width="50%", message=FALSE, warning=FALSE, fig.align="center"}
+bf_thresh_cand_subsp_panels(betai, bf.thresh=20, habitat_col)
+```
+
+# Generating null distributions
+
+Selecting SNPs using commonly used BF thresholds such as 20 results in far to many candidates (many 1000s). Instead, here I select thresholds based on estimated FPR using an estimated null distribution. Nulls are generated wither from randomly shuffling environmental data or running baypass with chr21.
+
+### Randomly shuffle environmnetal data
+
+Here I select thresholds based on estimated FPR I estimate FPR by running BayPass with habitat classifications which are **randomly shuffled within subspecies**. I run BayPass on with 5 different randomly shuffled habitat classifications.
+
+In order to account for run-to-run variation, I use the median values over three independent runs with different seeds (in depth exploration of this in `/Users/harrisonostridge/OneDrive - University College London/Projects/PanAf/phase1and2_exomes/baypass/baypass_aux/scripts/all/virishti_habitats.all.baypass_aux_output.run_to_run_var.Rmd`) as recommended in the BayPass manual. Below is a summary of all the runs.
+
+**Number of Focal Runs (Using True Habitat Assignments)**
+
+(# subspecies datasets) × (# independent repeats)
+
+3 × 3 = 9
+
+**Number of Random Runs (Using Habitat Assignments Randomly Shuffled Within Subspecies)**
+
+(# subspecies datasets) × (# random habitat datasets) × (# independent repeats)
+
+3 × 5 × 3 = 45
+
+**Total Number of Runs**
+
+9 + 45 = 54
+
+This value increases if I need to separate the dataset into subsets. It requires a lot of computational time. This method also cannot be comparable to the genetics-only test under the core model as there is no equivelent.
+
+### non-genic-chr21 null
+
+Unlike the exomes, non-coding regions are expected top be evolving relatively neutrally. Running BayPass with the same environmental data but with this 'more neutral' genetic data should give an appropriate null distribution. 
+
+**This is the method we chose**
+
+## M_P
+
+M_P is the posterior mean of the parameter P corresponding to the overall proportion of SNPs associated with each given covariable.
+
+If M_P of the real data is greater than the random nulls then we will likely see an excess of candidates compared to the null below.
+
+```{r eval=FALSE, echo=FALSE, out.width="33%"}
+source("scripts/baypass_aux_tools.R")
+if(chr21){
+  cat("Null is chr21\n")
+  plot_Pdelta_chr21(Pdelta, Pdelta_chr21)
+}else{
+  cat("Null is generated from random shuffling of environmental variables\n")
+  plot_Pdelta_random(Pdelta)
+}
+```
+
+## Null volcano plots
+
+Each plot represents the median values (across three independent runs with different seeds) from running BayPass on a particular subspecies dataset..
+
+```{r echo=FALSE, out.width="33%"}
+if(chr21){
+  cat("Null is chr21\n")
+  for(subsp in subsps){
+    aux_volcano.v2(betai_chr21[[subsp]][betai_chr21[[subsp]]$COVARIABLE_name %in% covs,], 
+                   x='M_Beta.median', y='`BF(dB).median`', colour_col='COVARIABLE_name', colours=habitat_col[covs])
+  }
+}
+```
+
+```{r echo=FALSE, out.width="20%"}
+if(!chr21){
+  cat("Null is generated from random shuffling of environmental variables\n")
+  betai.rand.total=combine_random_runs(betai, random_reps, vol_plots=TRUE)
+}
+```
+
+## Null vs real data
+
+```{r echo=FALSE, out.width="50%", message=FALSE, warning=FALSE}
+if(chr21){
+  cat("Null is chr21\n")
+  plot_betai_stats.v2(betai, null=betai_chr21, cols=habitat_col)
+}else{
+  cat("Null is generated from random shuffling of environmental variables\n")
+  plot_betai_stats.v2(betai, null=betai.rand.total, cols=habitat_col)
+}
+```
+
+The excess of positive beta values is striking in 'all subspecies'.
+
+There is an excess of positive betas for 'all subspecies' and central-eastern but not in western.
+
+# Select candidates
+
+## Calculate FPR per coverage bin
+
+We found that candidates were more likely to have lower coverages than expected from the background. We therefore decided to calculate FPRs within candidate bins to account for this.
+
+FPRs are estimated using a null distribution. SNPs in the null distribution are assigned empirical p values (BF rank/total number of SNPs). The null data is then combined with the exome data and ordered by BF. The FPR for each of the exome SNP is given as the smallest empirical p value of any null SNP with a lower or equal BF.
+
+##### Example (winthin a single coverage bin): 
+
+```
+Null BFs:   0   1   1   4   8
+  Ranks:    5   4   4   2   1
+  p:        1   0.8 0.8 0.4 0.2
+  
+Exome BFs:  0   2   3   9   10
+  FDR:      1   0.8 0.8 0.2 0.2
+```
+  
+We can see that in tied instances we use the lowest rank and that the minimum FPR possible is determined by the number of null SNPs.
+
+This is done for each coverage bin.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Assign FPRs
+over_write=F
+betai_fpr=list()
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  if(chr21){
+    cat("Null is chr21\n")
+    suffix=paste0(".non-genic_",flanks,"bp.flanks")
+    null=betai_chr21[subsp]
+  }else{
+    cat("Null is generated from random shuffling of environmental variables\n")
+    suffix="-cov_cor"
+    null=betai.rand.total[subsp]
+  }
+  file=paste0(formatted_aux_out_fprs_dir, "/f5", subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", 
+                       env_data, "_summary_betai.out_all_runs.fpr", suffix)
+  if(file.exists(file) & over_write==FALSE){
+    betai_fpr[[subsp]]=fread(file)
+  }else{
+    cat("Writing new file")
+    # Note that this function requires lists of data frames as inputs and outputs
+    out=assign_fpr(betai=betai[subsp], null=null, n_bins=5, tail_bin_size=0.1)
+    # Write FPR data
+    write.table(out[[subsp]], file, row.names=F, sep="\t")
+    betai_fpr[[subsp]]=out[[subsp]]
+  }
+}
+
+subsp='w'
+nrow(betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<=1 & betai_fpr[[subsp]]$M_Beta.median>0, ])
+nrow(betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<=1 & betai_fpr[[subsp]]$M_Beta.median<0, ])
+```
+
+### Threshold stats
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", fig.width=4.5, fig.height=3.5}
+# Plot
+plot_fpr_stats(betai_fpr, null=betai_chr21, fprs=fprs, top.cov=0.025, N_SNPs=TRUE, BF_thresh=TRUE, coverage=TRUE)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", fig.width=4.5, fig.height=3.5, eval=FALSE}
+# Plot
+plot_fpr_stats(betai_fpr, null=betai_chr21, fprs=fprs, top.cov=0.025, N_SNPs=FALSE, BF_thresh=FALSE, coverage=TRUE)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%", fig.width=3, fig.height=3, eval=FALSE}
+# Plot
+plot_fpr_stats(betai_fpr, null=betai_chr21, fprs=fprs, top.cov=0.025, N_SNPs=FALSE, BF_thresh=TRUE, coverage=FALSE)
+```
+
+### Match ancestral allele frequency
+
+I re run the same analysis in allele frequency bins to check that differences between the exome and non-genic-chr21 do not drive this excess.
+
+```{r out.width="33%"}
+n_bins=5
+betai_bins=list()
+betai_chr21_bins=list()
+stat='mean_DAF'
+# Note that in the BayPass output, M_P means estimated ancestral allele frequency or estimated population allele frequency depending on the file 
+
+for(subsp in subsps){
+  if(stat=='mean_DAF'){
+    # Calculate mean population allele frequency
+    for(data in c('exome', 'chr21')){
+      rownames(ac[[subsp]][[data]])=1:nrow(ac[[subsp]][[data]])
+      # Calculate  DAF
+      ## From allele counts file
+      dac=ac[[subsp]][[data]][, grepl(".dac$", names(ac[[subsp]][[data]]))]
+      aac=ac[[subsp]][[data]][, grepl(".aac$", names(ac[[subsp]][[data]]))]
+      daf=dac/(dac+aac)
+      daf[daf=='NaN']=NA
+      xtx[[data]][[subsp]]$mean_DAF=rowMeans(daf, na.rm = TRUE)
+      ## Alternative way based on BayPass standradised allele frequencies
+      #mean_DAF.exome=as.data.table(allele.freq[[subsp]])[, .(mean_DAF = mean(M_P)), by = MRK]
+      #xtx[['exome']][[subsp]]=merge(xtx[['exome']][[subsp]], mean_DAF.exome, by='MRK')
+    }
+  }
+  max=max(max(xtx[['exome']][[subsp]][[stat]]), max(xtx[['chr21']][[subsp]][[stat]]))
+  # Bins of consistent width
+  #breaks=seq(0, max, max/n_bins)
+  # Bins of consistent number of SNPs
+  breaks=quantile(xtx[['exome']][[subsp]][[stat]], probs = seq(0, 1, length.out = n_bins + 1))
+  midpoints=(breaks[-1] + breaks[-length(breaks)]) / 2
+  plot=ggplot(NULL)+
+    theme_bw()+
+    theme(plot.title = element_text(hjust = 0.5))+
+    geom_density(aes(x=xtx[['exome']][[subsp]][[stat]], col='Exome')) +
+    geom_density(aes(x=xtx[['chr21']][[subsp]][[stat]], col='Non-genic-chr21')) +
+    geom_vline(xintercept = breaks, color = "black", linetype = "dashed") +
+    labs(title=subsp_names[[subsp]], x=stat) +
+    geom_text(aes(x=midpoints, y=0, label=1:n_bins))
+  print(plot)
+  
+  for(data in c('exome', 'chr21')){
+    # Bins of consitent width
+    #xtx[[data]][[subsp]][[stat]]_bin=cut(xtx[[data]][[subsp]][[stat]], breaks = seq(0, max, max/n_bins), include.lowest=T)
+    # Bins of consistent number of SNPs
+    xtx[[data]][[subsp]]$stat_bin=cut(xtx[[data]][[subsp]][[stat]], breaks = breaks, include.lowest = TRUE)
+    #bins=unique(xtx[[data]][[subsp]]$stat_bin)
+    bins=levels(xtx[[data]][[subsp]]$stat_bin)
+    bin_names=paste0("bin", 1:length(bins))
+    names(bin_names)=bins
+    # Numbers for bin names
+    xtx[[data]][[subsp]]$stat_bin=bin_names[xtx[[data]][[subsp]]$stat_bin]
+  }
+  bins=unique(xtx[['exome']][[subsp]]$stat_bin)
+  bins=bins[order(bins)]
+  for(bin in bins){
+    # Exome
+    mrks=xtx[['exome']][[subsp]][xtx[['exome']][[subsp]]$stat_bin==bin, 'MRK']
+    betai_bins[[bin]][[subsp]]=betai[[subsp]][betai[[subsp]]$MRK %in% mrks,]
+    # chr21
+    mrks=xtx[['chr21']][[subsp]][xtx[['chr21']][[subsp]]$stat_bin==bin, 'MRK']
+    betai_chr21_bins[[bin]][[subsp]]=betai_chr21[[subsp]][betai_chr21[[subsp]]$MRK %in% mrks,]
+  }
+}
+```
+
+```{r echo=FALSE, fig.height=5, fig.width=3, message=FALSE, warning=FALSE, out.width="20%", eval=FALSE}
+#betai_fpr_bins=list()
+#for(bin in paste0("bin", 1:n_bins)){
+#  betai_fpr_bins[[bin]]=assign_fpr(betai=betai_bins[[bin]], null=betai_chr21_bins[[bin]], n_bins=5, tail_bin_size=0.1)
+#  plot_fpr_stats_main.v4(betai_fpr_bins[[bin]], betai_chr21_bins[[bin]], fprs=fprs, thresh_stat='BF(dB).median', title=paste0("M_P bin: ", bin))
+#}
+
+betai_fpr_bins=list()
+
+for(subsp in subsps){
+  for(bin in paste0("bin", 1:n_bins)){
+    tryCatch({
+    tmp=assign_fpr(betai=betai_bins[[bin]][subsp], null=betai_chr21_bins[[bin]][subsp], n_bins=5, tail_bin_size=0.1, verbose=F)
+    betai_fpr_bins[[bin]][[subsp]]=tmp[[subsp]]
+    plot_fpr_stats_main.v4(betai_fpr_bins[[bin]][subsp], betai_chr21_bins[[bin]], fprs=fprs, thresh_stat='BF(dB).median', title=paste0(stat, ": ", bin), verbose=F, plot_ratio=F)
+    
+  }, error = function(e) {
+    # Code to handle the error
+    print(paste(bin, ": Error"))
+    })
+  }
+}
+```
+
+```{r out.with="33%", eval=FALSE}
+for(bin in paste0("bin", 1:n_bins)){
+  cat(bin, "\n")
+  plot_fpr_stats(betai_fpr_bins[[bin]], null=betai_chr21_bins[[bin]], fprs=fprs, top.cov=0.025, N_SNPs=TRUE, BF_thresh=TRUE, coverage=TRUE)
+}
+```
+
+
+There is no qualitative difference between frequency bins.
+
+### LD thinning
+
+I thin the exome and non-genic-chr21 to check that the excess of exonic SNPs is not due to selection at a few sites and lots of hitchhiking.
+
+```{r warning=FALSE, out.width="50%"}
+tmp=list()
+betai_fpr.prune=list()
+betai.prune=list()
+betai_chr21.prune=list()
+for(i in 2:11){
+  for(subsp in subsps){
+    #betai_fpr.prune[[paste0(i)]][[subsp]]=betai_fpr[[subsp]][seq(i, nrow(betai_fpr[[subsp]]), by = i),]
+    betai[[subsp]]=betai[[subsp]][order(betai[[subsp]]$chr, betai[[subsp]]$pos),]
+    betai_chr21[[subsp]]=betai_chr21[[subsp]][order(betai_chr21[[subsp]]$chr, betai_chr21[[subsp]]$pos),]
+    betai.prune[[paste0(i)]][[subsp]]=betai[[subsp]][seq(i, nrow(betai[[subsp]]), by = i),]
+    betai_chr21.prune[[paste0(i)]][[subsp]]=betai_chr21[[subsp]][seq(i, nrow(betai_chr21[[subsp]]), by = i),]
+    
+    tmp=assign_fpr(betai=betai.prune[[paste0(i)]][subsp], null=betai_chr21.prune[[paste0(i)]][subsp], n_bins=5, tail_bin_size=0.1, verbose=F)
+    betai_fpr.prune[[paste0(i)]][[subsp]]=tmp[[subsp]]
+  }
+}
+for(i in names(betai_fpr.prune)){
+  plot_fpr_stats_main.v4(betai_fpr.prune[[i]], betai_chr21.prune[[paste0(i)]], fprs=fprs, thresh_stat='BF(dB).median', title=paste0("Every ", i, " SNPs"), verbose=F, plot_ratio=F)
+}
+```
+
+There is no qualitative difference between different levels of thinning.
+
+### Selecting savannah and forest candidates seperately
+
+This was done to check whether selection in either direction is contributing to the excess of SNPs strongly associated with the exome.
+
+```{r fig.height=3, fig.width=4.75, message=FALSE, warning=FALSE, echo=FALSE}
+#fdr.df.aux=plot_fpr_stats_main.v2(betai[['exome']], betai[['chr21']], fprs=fprs)
+fdr.df.aux=plot_fpr_stats_main.v3(betai_fpr, betai_chr21, fprs=fprs, thresh_stat='BF(dB).median')
+
+f.list=list()
+s.list=list()
+r.list=list()
+for(subsp in subsps){
+  f.list[['exome']][[subsp]]=betai_fpr[[subsp]][betai_fpr[[subsp]]$M_Beta.median>0,]
+  s.list[['exome']][[subsp]]=betai_fpr[[subsp]][betai_fpr[[subsp]]$M_Beta.median<0,]
+  #r.list[['exome']][[subsp]]=betai_fpr[[subsp]][sample(nrow(betai_fpr[[subsp]]), betai_fpr[[subsp]]/2),]
+  
+  f.list[['chr21']][[subsp]]=betai_chr21[[subsp]][betai_chr21[[subsp]]$M_Beta.median>0,]
+  s.list[['chr21']][[subsp]]=betai_chr21[[subsp]][betai_chr21[[subsp]]$M_Beta.median<0,]
+  n=nrow(betai_chr21[[subsp]])
+  r.list[['chr21']][[subsp]]=betai_chr21[[subsp]][sample(n, n/2),]
+}
+# Expectation from n umber of sites with positive or negative beta
+cat("forest\n")
+tmp=plot_fpr_stats_main.v3(f.list[['exome']], f.list[['chr21']], fprs=fprs, title="Number of forest candidate SNPs", thresh_stat='BF(dB).median')
+cat("savannah\n")
+tmp=plot_fpr_stats_main.v3(s.list[['exome']], s.list[['chr21']], fprs=fprs, title="Number of savannah candidate SNPs", thresh_stat='BF(dB).median')
+
+# Expectation from randomly sampled null
+cat("forest\n")
+tmp=plot_fpr_stats_main.v3(f.list[['exome']], r.list[['chr21']], fprs=fprs, thresh_stat='BF(dB).median')
+cat("savannah\n")
+tmp=plot_fpr_stats_main.v3(s.list[['exome']], r.list[['chr21']], fprs=fprs, thresh_stat='BF(dB).median')
+```
+
+
+```{r}
+for(subsp in subsps){
+  cat(subsp, "\n")
+  for(fpr in fprs){
+    cat(" FPR<", fpr, "\n")
+    betai_fpr.tmp=betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<=fpr, ]
+    abs_b=abs(betai_fpr.tmp$`M_Beta.median`)
+    for(beta in c(0.05, 0.1, 0.15, 0.2)){
+      abs_b.tmp=abs_b[abs_b>beta]
+      cat("   N SNPs with abs(beta) >", beta, ": ", length(abs_b.tmp), " (",100*(length(abs_b.tmp)/length(abs_b)),"% )\n")
+    }
+    cat("\n")
+    df.tmp=aggregate(`BF(dB).median` ~ coverage_bin, betai_fpr.tmp, function(x) min(x))
+    colnames(df.tmp)=c("Coverage bin", "Minimum BF(dB)")
+    print(df.tmp)
+  }
+}
+```
+
+
+#### Split betai test
+
+Because there appears to be a bias towards positive values in Central-Eastern in the null and exome I though maybe we need to calculate FPR values separately for sites with positive and negative beta values to account for this.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Assign FPRs
+over_write=F
+betai_fpr.bs=list()
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  if(chr21){
+    cat("Null is chr21\n")
+    suffix=paste0(".non-genic_",flanks,"bp.flanks-beta_split")
+    null=betai_chr21[subsp]
+  }else{
+    cat("Null is generated from random shuffling of environmental variables\n")
+    suffix="-cov_cor-beta_split"
+    null=betai.rand.total[subsp]
+  }
+  file=paste0(formatted_aux_out_fprs_dir, "/f5", subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", 
+                       env_data, "_summary_betai.out_all_runs.fpr", suffix)
+  if(file.exists(file) & over_write==FALSE){
+    betai_fpr.bs[[subsp]]=fread(file)
+  }else{
+    cat("Writing new file")
+    # Note that this function requires lists of data frames as inputs and outputs
+    out=assign_fpr.v2(betai=betai[subsp], null=null, n_bins=5, tail_bin_size=0.1, beta_split=T)
+    # Write FPR data
+    write.table(out[[subsp]], file, row.names=F, sep="\t")
+    betai_fpr.bs[[subsp]]=out[[subsp]]
+  }
+}
+
+library(ggvenn)
+for(subsp in subsps){
+  betai_fpr.bs[[subsp]]$chr_pos=paste(betai_fpr.bs[[subsp]]$chr, betai_fpr.bs[[subsp]]$pos, sep="_")
+  for(fpr in fprs){
+    venn=ggvenn(list("Regular"=betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<fpr, 'chr_pos'],
+                     "Betai Split"=betai_fpr.bs[[subsp]][betai_fpr.bs[[subsp]]$fpr<fpr, 'chr_pos']),label_sep = "\n", text_size = 3.5, set_name_size=4) + 
+      theme(plot.title = element_text(hjust = 0.5, size=15))+
+      labs(title=paste0(subsp, ":", fpr*100,"% Tail"))
+    print(venn)
+  }
+}
+```
+
+This has basically no effect at all. I expect that the slightly smaller number of candidates in the split beta version is just because we can be less precise about estimated FPRs due to fewer null SNPs and we always round down. This suggests to me that perhaps large betas do not necessarily correspond to large BFs? This has convinced me that the beta split is not the best option.
+
+## Candidate volcano plots
+
+```{r message=FALSE, warning=FALSE, out.width="33%", fig.height=5, fig.width=5, echo=FALSE}
+for(subsp in subsps){
+  plot_df=NULL
+  plot_df.tmp=betai_fpr[[subsp]][betai_fpr[[subsp]]$fpr<max(fprs),]
+  if(env_data %in% c('forest_tree_percentage', 'f_over_sum_known_trees')){
+      plot_df.tmp[plot_df.tmp$COVARIABLE_name==env_data, 'COVARIABLE_name']=''
+    }
+  for(fpr in fprs[order(-fprs)]){
+    plot_df.tmp[plot_df.tmp$fpr<fpr, 'COVARIABLE_name']=paste0(100*fpr, "%")
+    if(is.null(plot_df)){
+      plot_df=plot_df.tmp
+    }else{
+      plot_df=rbind(plot_df, plot_df.tmp)
+    }
+  }
+  colours=c("purple", "red", "darkorange")
+  names(colours)=unique(plot_df$COVARIABLE_name)[rev(order(unique(plot_df$COVARIABLE_name)))]
+  aux_volcano.v2(plot_df, 
+                   x='M_Beta.median', y='`BF(dB).median`', colour_col='COVARIABLE_name', colours=colours, log_density=FALSE, alpha=1)
+}
+```
+
+There are a number of candidates with abs(betai) < 0.1 (> 0.1 is considered large effect) at less stringent thresholds in western and particularly in all samples.
+
+Most candidates have abs(betai) > 0.1 for central-eastern, I expect this is because of the effect of Issa Valley.
+
+# Candidate Overlap
+
+```{r echo=FALSE, out.width="50%"}
+# Only common sites
+betai_fpr_com=betai_fpr %>% reduce(inner_join, by = c("chr", "pos"))
+betai_fpr_com=unique(betai_fpr_com[,c("chr", "pos")])
+# Add gene annotations in case I want to use FPR
+betai_fpr_ann=list()
+betai_fpr_ann.s=list()
+betai_fpr_ann.f=list()
+betai_fpr_ann_comm=list()
+betai_fpr_ann_comm.s=list()
+betai_fpr_ann_comm.f=list()
+for(subsp in subsps){
+  if(subsp=='all'){subspecies="All Subspecies"}
+  if(subsp=='c'){subspecies="Central"}
+  if(subsp=='e'){subspecies="Eastern"}
+  if(subsp=='ce'){subspecies="Central-Eastern"}
+  if(subsp=='n'){subspecies="Nigeria-Cameroon"}
+  if(subsp=='w'){subspecies="Western"}
+  betai_fpr_ann[[subspecies]]=merge(betai_fpr[[subsp]], ann[[subsp]][,c('chr', 'pos', 'gene')], by=c('chr', 'pos'), all.x=TRUE)
+  betai_fpr_ann[[subspecies]][betai_fpr_ann[[subspecies]]$COVARIABLE_name==env_data, 'COVARIABLE_name']=" "
+  betai_fpr_ann_comm[[subspecies]]=merge(betai_fpr_com, betai_fpr_ann[[subspecies]], by=c('chr', 'pos'), all.x=TRUE)
+  # Separate savannah and forest
+  betai_fpr_ann.f[[subspecies]]=betai_fpr_ann[[subspecies]][betai_fpr_ann[[subspecies]]$M_Beta.median>0, ]
+  betai_fpr_ann.s[[subspecies]]=betai_fpr_ann[[subspecies]][betai_fpr_ann[[subspecies]]$M_Beta.median<0, ]
+  betai_fpr_ann_comm.f[[subspecies]]=betai_fpr_ann_comm[[subspecies]][betai_fpr_ann_comm[[subspecies]]$M_Beta.median>0, ]
+  betai_fpr_ann_comm.s[[subspecies]]=betai_fpr_ann_comm[[subspecies]][betai_fpr_ann_comm[[subspecies]]$M_Beta.median<0, ]
+}
+
+# All sites
+candidate_overlap.v4(betai_fpr_ann, fprs=c(1, 0.005, 0.001, 0.0005))
+candidate_overlap.v4(betai_fpr_ann.f, fprs=c(1, 0.005, 0.001, 0.0005), title_suffix="-F")
+candidate_overlap.v4(betai_fpr_ann.s, fprs=c(1, 0.005, 0.001, 0.0005), title_suffix="-S")
+# Only common sites
+cat("Common SNPs only")
+candidate_overlap.v4(betai_fpr_ann_comm, fprs=c(1, 0.005, 0.001, 0.0005))
+candidate_overlap.v4(betai_fpr_ann_comm.f, fprs=c(1, 0.005, 0.001, 0.0005), title_suffix="-F")
+candidate_overlap.v4(betai_fpr_ann_comm.s, fprs=c(1, 0.005, 0.001, 0.0005), title_suffix="-S")
+```
+
+It is interesting that roughly 50% of western candidates are shared with those in the 'all samples' dataset whereas central-eastern shares a much smaller proportion with the 'all samples' dataset.
+
+## Distributions
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%"}
+binwidth=2
+alpha=0.25
+lw=0.5
+for(subsp in subsps){
+  betai_fpr[[subsp]]$chr_pos=paste(betai_fpr[[subsp]]$chr, betai_fpr[[subsp]]$pos, sep="_")
+  for(subsp_2 in subsps){
+    if(subsp!=subsp_2){
+      col.name=paste0("'",subsp,"'")
+      plot=ggplot(NULL) +
+        theme_bw() +
+        theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5),
+              legend.position = c(0.85, 0.85),
+              legend.background = element_rect(fill='transparent')) +
+        stat_bin(data=betai_fpr[[subsp]], aes_string(x='`BF(dB).median`', y='..density..', col=col.name, fill=col.name), alpha=1, binwidth=binwidth, geom="step", size=lw,
+                 position=position_nudge(x=-0.5*binwidth)) +
+        geom_histogram(data=betai_fpr[[subsp]], aes_string(x='`BF(dB).median`', y='..density..', fill=col.name), alpha=alpha, binwidth=binwidth, size=0)
+      tmp=list()
+      for(fpr in c(0.005, 0.001, 0.0005)){
+        fpr.name=paste0(100*fpr,"%")
+        col.name=paste0("'",subsp_2, " FPR<",fpr.name,"'")
+        tmp[[col.name]]=betai_fpr[[subsp]][betai_fpr[[subsp]]$chr_pos %in% betai_fpr[[subsp_2]][betai_fpr[[subsp_2]]$fpr<fpr, 'chr_pos'],]
+        plot=plot+
+          stat_bin(data=tmp[[col.name]], aes_string(x='`BF(dB).median`', y='..density..', col=col.name , fill=col.name), alpha=1, binwidth=binwidth, geom="step", size=lw,
+                 position=position_nudge(x=-0.5*binwidth)) +
+          geom_histogram(data=tmp[[col.name]], aes_string(x='`BF(dB).median`', y='..density..', fill=col.name), alpha=alpha, binwidth=binwidth, size=0)
+      }
+      cols=c('black', 'darkorange', 'turquoise4', 'violetred')
+      names(cols)=c(subsp, gsub("'", "", names(tmp)))
+      plot=plot+
+        scale_discrete_manual("", values = cols, aesthetics = c("colour", "fill"))
+      print(plot)
+    }
+  }
+}
+```
+
+As expected, there is basically no association between w and ce candidates but there is with each of those and all - particularly between all and w.
+
+# Write files
+
+```{bash eval=FALSE, echo=FALSE}
+mkdir ../../../gowinda/baypass_aux/output/gowinda_input/snp_files/f_over_sum_known_trees
+```
+
+```{r}
+if(chr21){
+  suffix=paste0(".non-genic_",flanks,"bp.flanks")
+}else{
+  suffix="-cov_cor"
+}
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  if(subsp=='n'){miss.pop=0}else{miss.pop=0.3}
+  # Write FPR data
+  write.table(betai_fpr[[subsp]], 
+              paste0(formatted_aux_out_fprs_dir, "/f5", subsp.file ,".pops_missing.pops.", miss.pop,"_minMAC2_", 
+                     env_data, "_summary_betai.out_all_runs.fpr", suffix),
+              row.names=F, sep="\t")
+  for(fpr in fprs){
+    # Write Gowinda input files
+    for(cov in unique(betai_fpr[[subsp]]$COVARIABLE_name)){
+      ## Both
+      write.table(unique(betai_fpr[[subsp]][betai_fpr[[subsp]]$COVARIABLE_name==cov & betai_fpr[[subsp]]$fpr<fpr, c("chr", "pos")]), 
+                  paste0(gowinda_snp_file_dir, env_data,"/",subsp,".", env_data,"-",cov,".fpr",100*fpr, "pct" ,suffix),
+                  col.names=F, row.names=F, sep="\t")
+      ## Positive beta
+      write.table(unique(betai_fpr[[subsp]][betai_fpr[[subsp]]$COVARIABLE_name==cov & betai_fpr[[subsp]]$fpr<fpr & betai_fpr[[subsp]]$M_Beta.median>0, c("chr", "pos")]), 
+                  paste0(gowinda_snp_file_dir, env_data,"/",subsp,".", env_data,"-",cov,".fpr",100*fpr, "pct" ,suffix, ".pos_beta"),
+                  col.names=F, row.names=F, sep="\t")
+      ## Negative beta
+      write.table(unique(betai_fpr[[subsp]][betai_fpr[[subsp]]$COVARIABLE_name==cov & betai_fpr[[subsp]]$fpr<fpr & betai_fpr[[subsp]]$M_Beta.median<0, c("chr", "pos")]), 
+                  paste0(gowinda_snp_file_dir, env_data,"/",subsp,".", env_data,"-",cov,".fpr",100*fpr, "pct" ,suffix, ".neg_beta"),
+                  col.names=F, row.names=F, sep="\t")
+    }
+  }
+}
+```
+
+

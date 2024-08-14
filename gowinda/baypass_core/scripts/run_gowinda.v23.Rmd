@@ -1,0 +1,1242 @@
+---
+title: "Run Gowinda"
+author: "Harrison Ostridge"
+date: "20/07/2021"
+output: html_document
+---
+
+In this script I set up and run gowinda, generating the required input files. This script must be run before running gowinda on the AUX candiadtes as there are inoput files in common.
+
+In earlier versions I consider different annotation files. I decided the GTF downloaded from https://grch37.ensembl.org/info/data/ftp/index.html performed the best so I now only use this.
+
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/gowinda/baypass_core/')
+```
+
+#### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(ggtext)
+library(RColorBrewer)
+library(wesanderson)
+library(VennDiagram)
+library(readxl)
+```
+
+# Gowinda
+
+Following https://code.google.com/archive/p/gowinda/wikis/Tutorial.wiki
+
+## Install Gowinda
+
+This is all done on my Mac
+
+Had to install java on Mac https://www.oracle.com/java/technologies/javase-jdk16-downloads.html - click MacOS installer
+
+Download other gowinda code from https://code.google.com/archive/p/gowinda/downloads
+
+## Annotation File Method 1 - GTF
+
+This follows the method outlined in the gowinda tutorial.
+
+### Download files
+
+Downloaded from Ensemble FTP: https://grch37.ensembl.org/info/data/ftp/index.html
+
+The hg19 (GRCh37) GTF file comes with a header which upsets Gowinda so I remove it.
+  
+```{bash eval=FALSE}
+# Download
+## GTF
+curl -o output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr.gtf.gz http://ftp.ensembl.org/pub/grch37/current/gtf/homo_sapiens/Homo_sapiens.GRCh37.87.chr.gtf.gz
+gunzip output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr.gtf.gz
+### Remove header
+awk 'NR > 5 { print }' < output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr.gtf > output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_no.head.gtf
+## GFF
+curl -o output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr.gff3.gz http://ftp.ensembl.org/pub/grch37/current/gff3/homo_sapiens/Homo_sapiens.GRCh37.87.chr.gff3.gz
+gunzip output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr.gff3.gz
+```
+
+#### My method of moving gene_name to gene_id column
+
+This is to extract all the gene symbols to generate a GO association file. In the tutorial I think their GTF file has official gene symbols in the gene_id column but in mine they are in the gene_name column so here I swap the gene_id column for the gene_name column. This file is then used to create the total genes file.
+
+```{bash eval=FALSE}
+# Remove gene_id column and all others after it
+awk -F 'gene_id' '{ print $1 }' output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_no.head.gtf > output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_no.head_first.columns.gtf
+# Select the gene name column (and rename gene_name to gene_id)
+grep -o 'gene_name "[^[:blank:]]*' output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_no.head.gtf | sed 's/gene_name/gene_id/' > output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_no.head_gene_id.gtf
+# Bind these columns together to give a GTF where gene_id refers to the official gene symbol 
+paste -d '    ' output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_no.head_first.columns.gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_no.head_gene_id.gtf > output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol.gtf
+```
+
+### Synonymous gene IDs and 1-1 homologs
+
+Synonymous gene names are in the GFF file and this script updates the GTF file with the gene name used in the association file. This is important as only genes found in both the annotation and association file will be considered. 
+
+Here I use the 'all genes' section of the association files sent by Harvi to synchronize gene names. This is a list of all 1-1 human-chimp homologs and is present in all association files sent by Harvi. This means that the resulting GTF file will be synced for all association files. We also later filter out GTF file to only contain 1-1 human chimp homologs and so by syncing the GTf file we also ensure that we do not miss out these genes just because of synonomous gene IDs.
+
+#### Synonymous gene IDs
+
+```{bash eval=FALSE}
+python bin/ExtractGeneAliasesFromGff.py \
+--input output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr.gff3 \
+> output/gowinda_input/annotation_files/synonymous.genids.txt
+```
+
+Because all of the gene set files sent by Harvi have a 'all genes' category it means they all contain the same list of all genes (1-1 human chimp homologs) and so I can just use any one here.
+
+```{bash eval=FALSE}
+python bin/SynchronizeGtfGeneIDs.py \
+--gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol.gtf \
+--gene-set output/gowinda_input/association_files/mergedlthtvip.gene.set_and.all.txt \
+--gene-aliases output/gowinda_input/annotation_files/synonymous.genids.txt \
+> output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync.gtf
+```
+
+#### Genes on multiple chromosomes
+
+Two genes, LSP1 and CKS1B, for some reason had an exon on a different chromosome to the rest. These are the only protein coding genes found on multiple chromosomes (even when considering genes which are not orthologs). I decide to remove them as there is clearly some confusion and inaccuracy here. See `/Users/harrisonostridge/OneDrive - University College London/Projects/PanAf/phase1and2_exomes/gowinda/scripts/finding_best_way_to_run_gowinda/missing_genes.Rmd` for full exploration of annotations on multiple chrs.
+
+```{bash eval=FALSE}
+# Delete lines corresponding to these genes
+sed -i '' '/"LSP1";/d'  ./output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync.gtf
+sed -i '' '/"CKS1B";/d'  ./output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync.gtf
+```
+
+#### Only 1-1 human-chimp homologs 
+
+I think this stage is technically not needed as genes are only included in the analysis if they are in the association file and the GTF file and only 1-1 homolgs are in the association file anyway. 
+
+```{r}
+## Read in gene set file
+assoc=data.frame(fread('output/gowinda_input/association_files/mergedlthtvip.gene.set_and.all.txt', header=FALSE))
+## Select 'all genes' cell and make vector of gene names
+homo.genes=toupper(strsplit(assoc[nrow(assoc), ncol(assoc)], " ")[[1]])
+## Write to file 
+write.table(homo.genes, "output/gowinda_input/annotation_files/one.to.one.human.chimp.homologs.txt", 
+            sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+
+## Read GTF
+con_gtf=fread("output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync.gtf")
+gtf.genes=toupper(gsub('gene_id "|";|gene:', '', con_gtf$V9))
+## Select relevant rows of GTF and write
+gtf_homo=con_gtf[gtf.genes %in% homo.genes,]
+write.table(gtf_homo, "output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf", 
+            sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+
+homo.genes[homo.genes %in% "GYPA"]
+
+length(unique(gtf.genes))
+length(unique(homo.genes))
+
+nrow(con_gtf)
+nrow(gtf_homo)
+```
+
+```{r}
+# Get list of homologous genes Check list of homologous genes from Josh's data availability section (https://datadryad.org/stash/dataset/doi:10.5061/dryad.zcrjdfn6m)
+homo.genes=data.frame(fread('../../genomic_data/schmidt_et.al.2019/doi_10.5061_dryad.zcrjdfn6m__v3/chimp.genes.human.names.homologs.and.amb.homology_mar.17.gtf', header=FALSE))$V9
+homo.genes=gsub('gene_id "','',homo.genes)
+homo.genes=toupper(gsub('".*','',homo.genes))
+# Read GTF
+con_gtf=fread("output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync.gtf")
+gtf.genes=toupper(gsub('gene_id "|";|gene:', '', con_gtf$V9))
+## Select relevant rows of GTF and write
+gtf_homo=con_gtf[gtf.genes %in% homo.genes,]
+#write.table(gtf_homo, "output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf", 
+#            sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+
+# Check that the association  files used in Pawar et al 'all genes' section is the same as all homologous genes listed here
+## Read in gene set file
+assoc=data.frame(fread('output/gowinda_input/association_files/mergedlthtvip.gene.set_and.all.txt', header=FALSE))
+## Select 'all genes' cell and make vector of gene names
+all.genes=toupper(strsplit(assoc[nrow(assoc), ncol(assoc)], " ")[[1]])
+
+if(!all.equal(all.genes[order(all.genes)], homo.genes[order(homo.genes)])){
+  stop("'All genes' section of annotation file does NOT match published (Schmidt et al.,2019) list of homologous genes.")
+}else{cat("All good: 'All genes' section of annotation file matches published (Schmidt et al.,2019) list of homologous genes.")}
+```
+
+### Obtain a GO association file from GoMiner
+
+I use the list of all 1-1 homologs (made in the cell above) to get GO association file to ensure we are only looking at 1-1 homologs.
+
+Link to High Throughput GoMiner: https://discover.nci.nih.gov/gominer/GoCommandWebInterface.jsp
+
+"Than we start a query at High Throughput GoMiner (http://discover.nci.nih.gov/gominer/relationship.jsp): * Step 1: provide the total_genes.txt file shown above * Step 2: again provide the total_genes.txt file shown above * Step 3,4,5: choose your species and evidence level * Step 6: make sure that Cross Reference and Synonym are checked * Step 7,8: leave the devaults * Step 9: set smalles category to 1 * Step 10: set largest category to 10.000 * Step 11: Choose all/gene ontology * Step 13: Provide email address and submit query"
+
+Step 1: Provide the one.to.one.human.chimp.homologs.txt file 
+Step 2: Again provide the one.to.one.human.chimp.homologs.txt file shown above
+Step 3: I selected All
+Step 4: H. sapiens
+Step 5: I selected All
+Step 6: Make sure that Cross Reference and Synonym are checked
+Step 7: Leave the defaults (Both and 0.05)
+Step 8: Leave the defaults (100)
+Step 9: Set smallest category to 1
+Step 10: Set largest category to 10,000
+Step 11: Choose all/gene ontology
+Step 13: Provide email address and submit query
+
+You then wait for them to email you the results. Will Probably take about 10 minutes.
+
+Doing it this way results in fewer missing genes than using FuncAssociate2 (http://llama.mshri.on.ca/funcassociate/download_go_associations) as predicted in the tutorial.
+
+```{bash eval=FALSE}
+python bin/GoMiner2FuncAssociate.py --input output/gowinda_input/association_files/HighThruputResult70538839/one.to.one.human.chimp.homologs.txt70538839.dir/one.to.one.human.chimp.homologs.txt.dir/one.to.one.human.chimp.homologs.txt.change.gce > output/gowinda_input/association_files/association_gominer.txt
+```
+
+#### Synonomous genes IDs
+
+We need to make sure gene names are synchronized.
+
+```{bash eval=FALSE}
+python bin/SynchronizeGtfGeneIDs.py \
+--gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+--gene-set output/gowinda_input/association_files/association_gominer.txt \
+--gene-aliases output/gowinda_input/annotation_files/synonymous.genids.txt \
+> output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_go.gtf
+```
+
+### Obtain a GWAS association file
+
+Here I make an association file from the GWAS catalogue https://www.ebi.ac.uk/gwas/docs/file-downloads.
+
+```{bash eval=FALSE}
+curl -o output/gowinda_input/association_files/gwas_catalog_v1.0.2-associations_e104_r2021-10-06.tsv https://www.ebi.ac.uk/gwas/api/search/downloads/alternative
+```
+
+```{r out.width="50%"}
+# This is the standard threshold used for human GWAS studies to account for multiple testing 
+p.thresh=5e-8
+# Read in data
+gwas=data.frame(fread("output/gowinda_input/association_files/gwas_catalog_v1.0.2-associations_e104_r2021-10-06.tsv"))[,c("DISEASE.TRAIT","REPORTED.GENE.S.", "P.VALUE")]
+# Keep only genic SNPs and associations that pass p value threshold
+gwas=gwas[!is.na(gwas$REPORTED.GENE.S.) & 
+            gwas$REPORTED.GENE.S.!="NR" & 
+            gwas$REPORTED.GENE.S.!="intergenic" & 
+            gwas$REPORTED.GENE.S.!="Intergenic" &
+            gwas$P.VALUE<p.thresh,]
+
+# Make it a row per gene name
+gwas=gwas %>% 
+    mutate(REPORTED.GENE.S. = strsplit(as.character(REPORTED.GENE.S.), ",")) %>% 
+    unnest(REPORTED.GENE.S.)
+gwas=unique(gwas[c('DISEASE.TRAIT', 'REPORTED.GENE.S.')])
+
+# Make mock association file just for syncing gene names
+gwas.for.sync=data.frame(Trait_ID="all_gwas_genes", Trait="all_gwas_genes", Genes=paste(gwas$REPORTED.GENE.S., collapse=" "))
+write.table(gwas.for.sync, "output/gowinda_input/association_files/gwas_association.for.gene.name.sync.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+```
+
+#### Synonomous genes IDs
+
+I could just only include homologs with `gwas[gwas$REPORTED.GENE.S. %in% homo.genes,]` but the issue is that there may be some synonymous gene names. To account for this I take the GTF file which has already been filtered to only include homologs (above) and I the sync this so all the synonymous gene names match those in the GWAS file. Extracting all the gene names of the new synchronized GTF file then gives us a list of all the homologous genes (in the GTF) with names synchronized to match the GWAS data. 
+
+```{bash}
+python2 ../bin/SynchronizeGtfGeneIDs.py \
+--gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+--gene-set output/gowinda_input/association_files/gwas_association.for.gene.name.sync.txt \
+--gene-aliases output/gowinda_input/annotation_files/synonymous.genids.txt \
+> output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_gwas.gtf
+```
+
+```{r out.width="50%"}
+gwas_homo.genes=unique(fread("output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_gwas.gtf")$V9)
+gwas_homo.genes=toupper(gsub('gene_id "|";|gene:', '', gwas_homo.genes))
+```
+
+```{r}
+# Select only homologous genes
+gwas.homo=gwas[gwas$REPORTED.GENE.S. %in% gwas_homo.genes,]
+# Format file
+## Prime data frame and add 'all.genes' category (using the synced gene names list (gwas_homo.genes) so there aren't gene alieses in there)
+gwas.ass=data.frame(Trait="all.genes", Genes=paste(gwas_homo.genes, collapse=" "))
+## For each trait, add a single row and all the associated genes as a string in the Gene column
+for(trait in unique(gwas.homo$DISEASE.TRAIT)){
+  trait.genes=gwas.homo[gwas.homo$DISEASE.TRAIT==trait,]$REPORTED.GENE.S.
+  gwas.ass=rbind(gwas.ass, list(paste0(trait), paste(trait.genes, collapse=" ")))
+}
+# Replace spaces with '_'
+gwas.ass$Trait=gsub(" ", "_", gwas.ass$Trait)
+gwas.ass$Trait_ID=paste0("gwas",1:nrow(gwas.ass))
+# Write file (make sure columns are in correct order)
+write.table(gwas.ass[,c("Trait_ID", "Trait", "Genes")], "output/gowinda_input/association_files/gwas_association.gene.set_and.all.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+#head(gwas.ass)
+```
+
+## Pathogens
+
+### Influenza
+
+This data is from Rogers, L.R., de Los Campos, G. and Mias, G.I., 2019. Microarray gene expression dataset re-analysis reveals variability in influenza infection and vaccination. Frontiers in immunology, 10, p.2616.
+
+Specifically, it is table SDF9_diseaseMainEstimateFluFilter_070919 from https://figshare.com/articles/dataset/Microarray_Gene_Expression_Dataset_Re-Analysis_Reveals_Variability_in_Influenza_Infection_and_Vaccination_/8636498/1
+
+Data file: https://figshare.com/ndownloader/files/16243640
+
+README file: https://figshare.com/ndownloader/files/16243853
+
+This contains "Biologically Significant Genes for Influenza Infection (two-tailed 10% quantile cut off on the estimates)". i.e. these genes show significantly different expression between controls and infected individuals (corrected for multiple testing) and effect sizes are 'biologically significant'. Gene expression data comes from meta analysis of 18 other studies.
+
+I selected with dataset because I wanted a dataset which was comparable to the SIV response genes. If we see enrichment for Flu and SIV genes then perhaps we are picking up selection to viruses more generally rather than SIV. SIV response genes are those differentially infected between native and naive hosts whereas this dataset is gene which are differentially expressed in humans upon influenza infection. I selected this study in particular as it is relatively recent and is a large meta analysis of multiple studies. 
+
+```{r}
+flu_genes=read.csv("output/gowinda_input/association_files/flu_Rogers_et.al.2019/SDF9_diseaseMainEstimateFluFilter_070919.csv")$Gene
+flu=data.frame(V1="Influenza (Rogers et al., 2019)", V2="Influenza (Rogers et al., 2019)", V3=paste(flu_genes, collapse=" "))
+```
+
+### SARS-CoV-2
+
+This data is a list of genes which either physically interact with COVID or are expressed differently in the host upon infection. This was sent to me from Dean Cornish on 07/12/2021. Dean made this by including results from 6 peer reviewed studies. The coordinates for for hg19.
+
+```{r}
+# Read in data
+covid.df=data.frame(fread("output/gowinda_input/association_files/covid/SARS-CoV-2_genecoordinates_Nov2020_sort.bed.txt"))[6:7]
+names(covid.df)=c("gene", "trait")
+covid.df[covid.df$trait=="Genome_wide_association_study", 'trait']="GWAS"
+covid.df[covid.df$trait=="host_protein_interaction", 'trait']="host-protein interaction"
+## Prime data frame and add 'all.genes' category (using the synced gene names list (covid_homo.genes) so there aren't gene aliases in there)
+covid=data.frame(V1=character(), V2=character(),Genes=character())
+## For each trait, add a single row and all the associated genes as a string in the Gene column
+for(trait in unique(covid.df$trait)){
+  trait.genes=covid.df[covid.df$trait==trait,]$gene
+  covid=rbind(covid, data.frame(V1=paste0("SARS-CoV-2: ", trait), V2=paste0("SARS-CoV-2: ", trait), V3=paste(trait.genes, collapse=" ")))
+}
+```
+
+### HSV-1
+
+I tested for Herpes Simplex Virus 1 as an example of a DNA virus, all previously tested viruses were RNA viruses.
+
+The gene set list is a set of genes which are differentially expressed between infected and non-infected cells from Drayman, N., Patel, P., Vistain, L. and Tay, S., 2019. HSV-1 single-cell analysis reveals the activation of anti-viral and developmental programs in distinct sub-populations. Elife, 8, p.e46339. Specifically, these genes were significantly unregulated in cells which were infected and showed viral gene expression (ICP4+) compared to cells which were not exposed to the virus (mock) and cells which where exposed but did not show any viral expression (ICP4–).
+
+Note that we lose a lot of genes despite syncing gene names because of the unusual naming convention in the file (977 to 408).
+
+```{r}
+# Read in data
+hsv_genes=read_excel("output/gowinda_input/association_files/hsv-1_Drayman_et.al.2019/elife-46339-supp3-v2.xlsx", sheet="a. wt ICP4 positive")[['Gene_name']]
+hsv=data.frame(V1="HSV-1", V2="HSV-1", V3=paste(hsv_genes, collapse=" "))
+```
+
+### SIV response
+
+Association file sent by Harvi and used in Pawar et al. 2022
+
+```{r}
+# Read in data
+siv_res=fread("output/gowinda_input/association_files/ververt.siv.CD4only_all.genes.txt", header=FALSE)
+siv_res=siv_res[!siv_res$V2 %in% c("all_genes", "all.genes"),]
+siv_res$V1="SIV_response"
+siv_res$V2="SIV_response"
+```
+
+### SIV coexpression modules
+
+Association file sent by Harvi and used in Pawar et al. 2022
+
+```{r}
+# Read in data
+sivmod=fread("output/gowinda_input/association_files/ververt.siv.modules.set_all.genes.txt", header=FALSE)
+sivmod=sivmod[!sivmod$V2 %in% c("all_genes", "all.genes"),]
+```
+
+### HIV GWAS
+
+```{r}
+# Read in data
+hiv_gwas=fread("output/gowinda_input/association_files/hiv.aids.gwas.2kb.allgenes.txt", header=FALSE)
+hiv_gwas=hiv_gwas[!hiv_gwas$V2 %in% c("all_genes", "all.genes"),]
+
+hiv_gwas[hiv_gwas$V2=="HIV1replication", "V2"]="GWAS: HIV-1 replication"
+hiv_gwas[hiv_gwas$V2=="AIDS", "V2"]="GWAS: AIDS"
+hiv_gwas[hiv_gwas$V2=="TotalbilirubinlevelsinHIV1infection", "V2"]="GWAS: Total bilirubin levels in HIV-1 infection"
+hiv_gwas[hiv_gwas$V2=="SetpointviralloadinHIV1infection", "V2"]="GWAS: Set point viral load in HIV-1 infection"
+hiv_gwas[hiv_gwas$V2=="HIV1viralsetpoint", "V2"]="GWAS: HIV-1 viral set point"
+hiv_gwas[hiv_gwas$V2=="HIV1control", "V2"]="GWAS: HIV-1 control"
+hiv_gwas[hiv_gwas$V2=="NeutrophilcountinHIVinfection", "V2"]="GWAS: Neutrophil count in HIV infection"
+hiv_gwas[hiv_gwas$V2=="HIV1susceptibility", "V2"]="GWAS: HIV-1 susceptibility"
+hiv_gwas[hiv_gwas$V2=="AIDSprogression", "V2"]="GWAS: AIDS progression"
+
+hiv_gwas$V1=paste0("hiv_gwas-", 1:nrow(hiv_gwas))
+```
+
+### Malaria
+
+This data is from 'Daub, J.T., Hofer, T., Cutivet, E., Dupanloup, I., Quintana-Murci, L., Robinson-Rechavi, M. and Excoffier, L., 2013. Evidence for polygenic adaptation to pathogens in the human genome. Molecular biology and evolution, 30(7), pp.1544-1558' Supplementry material, TableS1_MBE_Daub.xlsx, sheet 'Genes in candidate sets'. This contains information on the gene sets used too.
+
+Data link: https://oup.silverchair-cdn.com/oup/backfile/Content_public/Journal/mbe/30/7/10.1093_molbev_mst080/2/mst080_Supplementary_Data.zip?Expires=1642073293&Signature=U8pV80F1KSWdAOEv48Jja8TD-PxZIHX9eDJlGEvIyhEIb4PqnmE5rqYYpM0V0P1ZRu~Yg484EtLDwXFPftTKIR~uMWSk8FN7gcGYNNrNsEbEDk68sD3cng9bdX2Qr4ppkp~2xXnMKr7GpGasu40~jlvcfKDgxx69kz4tcaE6BYwHAGxDAbTyZFy~sVMnJLJMtz6gSA2QJ0V25QoHwYhGeoeCmtZ2eCsj0PL9zSe7oDCaKgRu2iVZCYdBNQB0Zt52I95Rd1c3vWOxPLr-2dgyOxrIWaHLWBsl5bQM7Uh7W-ylziY~PeetplZWW1pBWo1blXL1mNcc1TJsIsq3FmPeKg__&Key-Pair-Id=APKAIE5G5CRDK6RD3PGA
+
+```{r out.width="50%"}
+# Read in data
+malaria=read_excel("output/gowinda_input/association_files/malaria_Daub_el.al.2013/mst080_Supplementary_Data/TableS1_MBE_Daub.xlsx", sheet="Genes in candidate sets")[c('Malaria (152665)', 'symb')]
+malaria=malaria[!is.na(malaria$`Malaria (152665)`),]$symb
+# Make mock association file just for syncing gene names
+malaria=data.frame(V1="Malaria (Daub et al., 2013)", V2="Malaria (Daub et al., 2013)", V3=paste(malaria, collapse=" "))
+```
+
+### Malaria - RBC
+
+This data is from Ebel, E.R., Kuypers, F.A., Lin, C., Petrov, D.A. and Egan, E.S., 2021. Common host variation drives malaria parasite fitness in healthy human red cells. Elife, 10, p.e69808. In this study they genotyped people and tested the suseptability of their red blood to infection from Plasmodium falciparum. These are 'Twenty-three RBC genes with strong links to malaria in the literature.'
+
+Data is Figure 5 - source data 1: https://elifesciences.org/articles/69808#fig5sdata1
+
+Download link: https://elifesciences.org/download/aHR0cHM6Ly9jZG4uZWxpZmVzY2llbmNlcy5vcmcvYXJ0aWNsZXMvNjk4MDgvZWxpZmUtNjk4MDgtZmlnNS1kYXRhMS12Mi54bHN4/elife-69808-fig5-data1-v2.xlsx?_hash=fLniZ2S%2BDnnZYdI1WEwR2wFMpUx%2BOvaY9VzY%2FEZArWE%3D
+
+```{r out.width="50%"}
+# Read in data
+malaria_rbc=read_excel("output/gowinda_input/association_files/elife-69808-fig5-data1-v2.xlsx", sheet="Sheet1")$`Gene name`
+# Split the one gene with two symbols
+malaria_rbc=unlist(strsplit(malaria_rbc, "/"))
+
+# Make mock association file just for syncing gene names
+malaria_rbc=data.frame(V1="Malaria (erythrocyte genes) (Ebel et al., 2021)", V2="Malaria (erythrocyte genes) (Ebel et al., 2021)", V3=paste(malaria_rbc, collapse=" "))
+```
+
+### Malaria - Ebel et al. 2017
+
+Conserved mammalian malaria related genes fro Ebel et al. 2017 (https://journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1007023) - https://doi.org/10.1371/journal.pgen.1007023.s006
+
+Specifically, this is Table S2: "Mammalian PPIPs [(Plasmodium- or Piroplasm- interacting proteins)] linked to Plasmodium through literature abstracts. The gene name, host species, parasite species, study IDs, and evidence type are given for each PPIP. **Note that some well-known malaria-related genes (such as the glycophorin family) are not included because they are not sufficiently conserved among mammals (Methods, Mammalian Orthologs).**"
+
+These genes are known to be related using Physical Interaction, Association Knockout and/or Overexpression Expression Change and this is indicated in the table.
+
+Someone at SMBE 2023 studying malaria adaptation in monkeys drew my attention to this paper which includes a much longer list of malaria related genes and was used to study adaptation across the mammal phylogeny. This list was designed for testing for malaria selection over the whole mammalian phylogeny (hence why it excludes HBB/HBD and GYPA/GYPB) to a range of malaria parasites and so is perhaps less helpful than the lists of genes already tested which are based on close relatives of the malaria parasite and host species (P.falciparum and humans). I restrict these genes to those with interactions with
+
+'Ape Origins of Human Malaria' (Sharp, Plenderleith and Hahn 2020)
+
+- P.berghei, P.chabaudi, P.vinckei and P.yoelii not mentioned as infecting primates (I think they are rodent parasites?)
+
+- P.knowlesi is restricted to Asia where it infects monkeys and humans zoonotically.
+
+- **P.reichenowi, P.vivax and P.falciparum (or at least closely related parasites) infect chimps.**
+
+```{r out.width="50%"}
+# Read in data
+ebel_2017=read.csv("output/gowinda_input/association_files/malaria_Ebel_et_al.2017/pgen.1007023.s006.csv")
+
+parasites=unique(unlist(strsplit(ebel_2017$Parasite, "\\*")))
+parasites[order(parasites)]
+
+ebel_2017=unique(ebel_2017[grepl("P\\.falciparum|P\\.vivax|P\\.reichenowi", ebel_2017$Parasite), 'Symbol'])
+length(unique(ebel_2017))
+# Make mock association file just for syncing gene names
+ebel_2017=data.frame(V1="Malaria (conserved genes) (Ebel et al., 2017)", V2="Malaria (conserved genes) (Ebel et al., 2017)", V3=paste(ebel_2017, collapse=" "))
+
+# I also make a 'total malaria' category with all genes combined 
+malaria_TOTAL=data.frame(V1="Malaria (TOTAL)", V2="Malaria (TOTAL)", V3=paste(unique(c(malaria$V3, malaria_rbc$V3, ebel_2017$V3)), collapse=" "))
+```
+
+### Anthrax
+
+I searched "anthrax genes" for papers from 2010 until present using Web of Science and sifted through the 150 most relevant papers. I found two papers which looked at gene expression changes in human cells when exposed to Bacillus anthracis spores or toxins. Neither share their data but "Booth, J.L., Duggan, E.S., Patel, V.I., Wu, W., Burian, D.M., Hutchings, D.C., White, V.L., Coggeshall, K.M., Dozmorov, M.G. and Metcalf, J.P., 2018. Gene expression profiling of primary human type I alveolar epithelial cells exposed to Bacillus anthracis spores reveals induction of neutrophil and monocyte chemokines. Microbial pathogenesis, 121, pp.9-21." had a table with the top 25 up regulated genes after 4 hours and after 24 hours. I do not think this looks like a great study as there are only 3 replicates and they do not report genes which are downregulated considerably. Still this is the best I could find.
+
+"anthrax polymorphic selection" gave no results and I couldn't find any study which used an anthrax gene set.
+
+As a struggled to find an appropriate anthrax gene set based on gene expression studies, I decided to also include genes reported as associated with anthrax in MalaCards https://www.malacards.org/card/anthrax_disease#related_genes. This list is created by text mining papers.
+
+I do not have huge faith in these gene sets so results should be interpreted with caution.
+
+```{r out.width="50%"}
+anthrax_booth=c("CCL4", "PRKXP1", "SHANK2", "DPCR1", "LIX1L", "CCDC192", "ADAMTS7P1", 'IFIT1', "TCEA2", "SCARNA22", "CXCL8", "HBG1", "KIF4B", "KRTAP1-1", "MICA", "OXSM", "SH3BP2", "RSAD2", "MYOZ3", "ZNF329", "MPEG1", "SCGB2A1", "SSTR4", "BCL2A1", "KCNK13", "UBD", "CXCL5", "NCF1B", "HIST1H2BH", "CA5B", "DGCR11", "NUTM2B-AS1", "CDRT15P1", "LTB", "CCKAR", "PTGER4", "LCE2D", "ERVK-7", "MEG3", "ZNF75D", "ZNF223", "CXCL8", "KRT75", "MAP2K4", "UBE2MP1", "MAP1LC3B2", "IFT80", "RNU105B", "SLC25A3", "POLR3G")
+anthrax_malacards=c('ANTXR1', 'ANTXR2', 'FURIN', 'MKKS', 'PRDX1', 'LRP6', 'PCSK6', 'MAP2K2', 'MAP2K1', 'CASP1', 'ADCY10', 'MAP2K4', 'MAPK14', 'MAP2K6', 'KIF1C', 'NLRP1', 'APLF')
+
+anthrax_booth=data.frame(V1="Anthrax (Booth et al., 2018)", V2="Anthrax (Booth et al., 2018)", V3=paste(anthrax_booth, collapse=" "))
+anthrax_malacards=data.frame(V1="Anthrax (MalaCards)", V2="Anthrax (MalaCards)", V3=paste(anthrax_malacards, collapse=" "))
+```
+
+### Ebola
+
+This data is from Sheet 2 of additional file 1 from 'Fontsere, C., Frandsen, P., Hernandez-Rodriguez, J. et al. The genetic impact of an Ebola outbreak on a wild gorilla population. BMC Genomics 22, 735 (2021). https://doi.org/10.1186/s12864-021-08025-y'
+
+https://bmcgenomics.biomedcentral.com/articles/10.1186/s12864-021-08025-y#Abs1
+
+The table is a "List of genes associated to **immune response or** ebola infection in the literature and the 15 neutral regions included in the study."
+
+I select only those with a known relation with ebola specifically (not general virus).
+- 
+
+Data link: https://ndownloader.figstatic.com/files/31052926
+
+```{r}
+ebola=read_excel("output/gowinda_input/association_files/ebola_Fontsere_et.al.2021/12864_2021_8025_MOESM1_ESM.xlsx", sheet="Table S2, genes and NR")
+# Correct the column headers
+colnames(ebola)=unlist(ebola[1,])
+colnames(ebola)[1]="Gene"
+ebola=ebola[2:nrow(ebola),]
+# Select only ebola related genes
+## These are those when ebola/EBOV is mentioned in the descrition apart from the few cases where it says "No direct link to Ebola"
+ebola=ebola[grepl("ebola|EBOV", ebola$`Comment / Coordinates`, ignore.case=TRUE) &
+              !grepl("No direct link to Ebola", ebola$`Comment / Coordinates`, ignore.case=TRUE), 
+            c("Gene", "Comment / Coordinates")]
+#print(ebola)
+
+ebola=ebola$Gene
+
+# Clean
+## Remove the characters '\r\n' which for some reason appear after IPS1
+ebola=gsub("\r\n", "", ebola)
+## Remove neutral regions
+ebola=ebola[!grepl("NeutralRegion", ebola)]
+## Remove brackets
+ebola[ebola=="TEK (TIE2)"]="TEK"
+## Replace Greek characters 
+### I googled their aliases 
+ebola[ebola=="IFN-α"]="IFNA"
+ebola[ebola=="IFN-γ"]="IFNG"
+ebola[ebola=="TNF-α" ]="TNF"
+## to upper case
+ebola=toupper(ebola)
+
+ebola=data.frame(V1="Ebola", V2="Ebola", V3=paste(ebola, collapse=" "))
+```
+
+### Combine Pathogens  (including the latter addition of Ebel et al 2017)
+
+This creates a file which will not form part of the final results but is a test to see if we have enrichment of the malaria related genes in Ebel et al 2017.
+
+```{r}
+path.for.sync=rbind(siv_res, hiv_gwas, malaria, malaria_rbc, anthrax_booth, anthrax_malacards, ebola, flu, covid, hsv, ebel_2017)
+write.table(path.for.sync, "output/gowinda_input/association_files/pathogen_ebel2017_association.for.gene.name.sync.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+```
+
+#### Synonomous genes IDs
+
+I perform the same process as done for the GWAS gene sets above.
+
+```{bash}
+python2 ../bin/SynchronizeGtfGeneIDs.py \
+--gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+--gene-set output/gowinda_input/association_files/pathogen_ebel2017_association.for.gene.name.sync.txt \
+--gene-aliases output/gowinda_input/annotation_files/synonymous.genids.txt \
+> output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_pathogen_ebel2017.gtf
+```
+
+```{r}
+path_homo.genes=unique(fread("output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_pathogen_ebel2017.gtf")$V9)
+path_homo.genes=toupper(gsub('gene_id "|";|gene:', '', path_homo.genes))
+
+path=rbind(siv_res, hiv_gwas, malaria, malaria_rbc, anthrax_booth, anthrax_malacards, ebola, flu, covid, hsv, ebel_2017,
+           data.frame(V1="all_genes", V2="all_genes", V3=paste(path_homo.genes, collapse=" ")))
+write.table(path, "output/gowinda_input/association_files/pathogen_ebel2017_association.gene.set_and.all.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+
+#fread("output/gowinda_input/association_files/pathogen_ebel2017_association.gene.set_and.all.txt", header=F)
+```
+
+## Tissue expression data - Human Protein Atlas
+
+https://www.proteinatlas.org/about/download
+
+#### Download
+
+For some reason curl didn't work so I just downloaded it by clicking on the link here https://www.proteinatlas.org/download/normal_tissue.tsv.zip.
+
+```{bash eval=FALSE}
+#curl -o output/gowinda_input/association_files/normal_tissue.tsv.zip https://www.proteinatlas.org/download/normal_tissue.tsv.zip
+unzip output/gowinda_input/association_files/normal_tissue.tsv.zip
+```
+
+```{r}
+# Read in file
+expr=fread("output/gowinda_input/association_files/normal_tissue.tsv")
+# Keep only high confidence associations
+## Only sleect approved associations
+## Only associate a protein with a tissue if it is highly expressed in that tissue
+expr=expr[expr$Reliability=="Approved",]
+expr=expr[expr$Level=="High",]
+expr=expr[order(expr$Tissue),]
+# Combine seemingly synonymous groups
+expr[expr$Tissue %in% c("endometrium 1", "endometrium 2"), "Tissue"]="endometrium"
+expr[expr$Tissue %in% c("skin 1", "skin 2"), "Tissue"]="skin"
+expr[expr$Tissue %in% c("stomach 1", "stomach 2"), "Tissue"]="stomach"
+expr[expr$Tissue %in% c("soft tissue 1", "soft tissue 2"), "Tissue"]="soft tissue"
+expr=unique(expr[,c('Gene name', 'Tissue')])
+# Prepare file for gene name syncing
+expr.for.sync=data.frame(Trait_ID="all.genes", Trait="all.genes", Genes=paste(unique(expr$`Gene name`), collapse=" "))
+write.table(expr.for.sync, "output/gowinda_input/association_files/expr_association.for.gene.name.sync.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+```
+
+#### Synonomous genes IDs
+
+```{bash}
+python2 ../bin/SynchronizeGtfGeneIDs.py \
+--gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+--gene-set output/gowinda_input/association_files/expr_association.for.gene.name.sync.txt \
+--gene-aliases output/gowinda_input/annotation_files/synonymous.genids.txt \
+> output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_expr.gtf
+```
+
+```{r}
+# Select only homologous genes
+expr_homo.genes=unique(fread("output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_expr.gtf")$V9)
+expr_homo.genes=toupper(gsub('gene_id "|";|gene:', '', expr_homo.genes))
+expr.homo=expr[expr$`Gene name` %in% expr_homo.genes,]
+
+# Prepare association file
+expr.ass=data.frame(Trait_ID="all.genes", Trait="all.genes", Genes=paste(unique(expr.homo$`Gene name`), collapse=" "))
+tissues=unique(expr.homo$Tissue)
+for(i in 1:length(tissues)){
+  tissue=tissues[i]
+  tissue_genes=unique(expr.homo[expr.homo$Tissue==tissue,]$`Gene name`)
+  expr.ass=rbind(expr.ass, data.frame(Trait_ID=paste0("expr_", i), Trait=tissue, Genes=paste(tissue_genes, collapse=" ")))
+}
+
+# Write file (make sure columns are in correct order)
+write.table(expr.ass[,c("Trait_ID", "Trait", "Genes")], "output/gowinda_input/association_files/expr_association.gene.set_and.all.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+#head(expr.ass)
+```
+
+```{r}
+# (semi-)unique genes
+n=3
+
+freq=table(expr$`Gene name`)
+expr.unique=expr[expr$`Gene name` %in% names(freq[freq<=n]),]
+# Select only homologous genes
+expr.unique.homo=expr.unique[expr.unique$`Gene name` %in% expr_homo.genes,]
+
+# Prepare association file
+expr.unique.ass=data.frame(Trait_ID="all.genes", Trait="all.genes", Genes=paste(unique(expr.unique.homo$`Gene name`), collapse=" "))
+tissues=unique(expr.unique.homo$Tissue)
+for(i in 1:length(tissues)){
+  tissue=tissues[i]
+  tissue_genes=unique(expr.unique.homo[expr.unique.homo$Tissue==tissue,]$`Gene name`)
+  expr.unique.ass=rbind(expr.unique.ass, data.frame(Trait_ID=paste0("expr_", i), Trait=tissue, Genes=paste(tissue_genes, collapse=" ")))
+}
+
+# Write file (make sure columns are in correct order)
+write.table(expr.unique.ass[,c("Trait_ID", "Trait", "Genes")], paste0("output/gowinda_input/association_files/expr.",n,"overlap_association.gene.set_and.all.txt"),
+                col.names=F, row.names=F, quote = F,sep="\t")
+#head(expr.unique.ass)
+```
+
+## Phenotype database
+
+https://www.ncbi.nlm.nih.gov/gap/phegeni
+
+```{bash}
+curl -o output/gowinda_input/association_files/PheGenI_Association_full https://www.ncbi.nlm.nih.gov/projects/gap/eqtl/EpiViewBE.cgi?type=dl.tab
+```
+
+```{r}
+p.thresh=5e-8
+# Read in file
+phen=fread("output/gowinda_input/association_files/PheGenI_Association_full")
+phen$`P-Value`=gsub("E", "e", phen$`P-Value`)
+phen$`P-Value`=as.numeric(phen$`P-Value`)
+# Select only significant associations
+phen=phen[phen$`P-Value`<=p.thresh,]
+# Add data for all gene alieses 
+phen_1=phen[, c('Trait', 'Gene')]
+phen_2=phen[, c('Trait', 'Gene 2')]
+colnames(phen_2)=c('Trait', 'Gene')
+phen=rbind(phen_1, phen_2)
+phen=unique(phen)
+
+# Prepare file for gene name syncing
+phen.for.sync=data.frame(Trait_ID="all.genes", Trait="all.genes", Genes=paste(unique(phen$Gene), collapse=" "))
+write.table(phen.for.sync, "output/gowinda_input/association_files/phen_association.for.gene.name.sync.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+```
+
+#### Synonomous genes IDs
+
+```{bash}
+python2 ../bin/SynchronizeGtfGeneIDs.py \
+--gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+--gene-set output/gowinda_input/association_files/phen_association.for.gene.name.sync.txt \
+--gene-aliases output/gowinda_input/annotation_files/synonymous.genids.txt \
+> output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_phen.gtf
+```
+
+```{r}
+# Select only homologous genes
+phen_homo.genes=unique(fread("output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_phen.gtf")$V9)
+phen_homo.genes=toupper(gsub('gene_id "|";|gene:', '', phen_homo.genes))
+phen.homo=phen[phen$Gene %in% phen_homo.genes,]
+
+# Prepare association file
+phen.ass=data.frame(Trait_ID="all.genes", Trait="all.genes", Genes=paste(unique(phen.homo$Gene), collapse=" "))
+traits=unique(phen.homo$Trait)
+for(i in 1:length(traits)){
+  trait=traits[i]
+  trait_genes=unique(phen.homo[phen.homo$Trait==trait,]$Gene)
+  phen.ass=rbind(phen.ass, data.frame(Trait_ID=paste0("phen_", i), Trait=trait, Genes=paste(trait_genes, collapse=" ")))
+}
+
+# Write file (make sure columns are in correct order)
+write.table(phen.ass[,c("Trait_ID", "Trait", "Genes")], "output/gowinda_input/association_files/phen_association.gene.set_and.all.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+#head(phen.ass)
+```
+
+## Immunity genes
+
+### Innate immunity genes
+
+This data is from Table S1 in Deschamps, M., Laval, G., Fagny, M., Itan, Y., Abel, L., Casanova, J.L., Patin, E. and Quintana-Murci, L., 2016. Genomic signatures of selective pressures and introgression from archaic hominins at human innate immunity genes. The American Journal of Human Genetics, 98(1), pp.5-21. It lists Innate Immunity genes which Aida also used for her study (Reher et al. 2018).
+
+```{bash}
+curl -o output/gowinda_input/association_files/immunity_genes/Deschamps_et.al._2016/mmc2.xlsx https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4716683/bin/mmc2.xlsx
+```
+
+```{r warning=FALSE, message=FALSE}
+# Read in file
+## Skip header of 9 rows
+in_imm=unique(read_excel("output/gowinda_input/association_files/immunity_genes/Deschamps_et.al._2016/mmc2.xlsx", skip =9, sheet="Table S1")$HGNC_symbol)
+
+length(in_imm)
+```
+
+### General immunity
+
+This data is from Table S2 in Klunk, J., Vilgalys, T.P., Demeure, C.E. et al. Evolution of immune genes is associated with the Black Death. Nature 611, 312–319 (2022). https://doi.org/10.1038/s41586-022-05349-x. It is a manually curated list of immunity genes that they sequence in this study to investigate adaptation to the black death.
+
+```{bash eval=FALSE}
+curl -o output/gowinda_input/association_files/immunity_genes/Klunk_et.al._2022/mmc2.xlsx https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-022-05349-x/MediaObjects/41586_2022_5349_MOESM3_ESM.xlsx
+```
+
+```{r}
+# Read in file
+## Skip header of 9 rows
+klunk_imm=unique(read_excel("output/gowinda_input/association_files/immunity_genes/Klunk_et.al._2022/41586_2022_5349_MOESM3_ESM.xlsx", skip =2, sheet="S2")$Exon)
+klunk_imm=unlist(strsplit(klunk_imm, ":"))
+# Prepare file for gene name syncing
+imm.for.sync=data.frame(Trait_ID="all.genes", Trait="all.genes", Genes=paste(unique(c(in_imm, klunk_imm)), collapse=" "))
+write.table(imm.for.sync, "output/gowinda_input/association_files/imm_association.for.gene.name.sync.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+```
+
+#### Synonomous genes IDs
+
+```{bash}
+python2 ../bin/SynchronizeGtfGeneIDs.py \
+--gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+--gene-set output/gowinda_input/association_files/imm_association.for.gene.name.sync.txt \
+--gene-aliases output/gowinda_input/annotation_files/synonymous.genids.txt \
+> output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_imm.gtf
+```
+
+```{r}
+# Select only homologous genes
+imm_homo.all_genes=unique(fread("output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_imm.gtf")$V9)
+imm_homo.all_genes=toupper(gsub('gene_id "|";|gene:', '', imm_homo.all_genes))
+
+in_imm.homo=in_imm[in_imm %in% imm_homo.all_genes]
+in_imm.homo=in_imm.homo[order(in_imm.homo)]
+klunk_imm.homo=klunk_imm[klunk_imm %in% imm_homo.all_genes]
+klunk_imm.homo=klunk_imm.homo[order(klunk_imm.homo)]
+
+imm_homo.all_genes=imm_homo.all_genes[order(imm_homo.all_genes)]
+
+imm.ass=data.frame(Trait_ID=c("Innate immunity genes (Deschamps et al., 2016)", "Immunity genes (Klunk et al., 2022)","all_genes"), 
+                   Trait=c("Innate immunity genes (Deschamps et al., 2016)", "Immunity genes (Klunk et al., 2022)", "all_genes"), 
+                   Genes=c(paste(in_imm.homo, collapse=" "), paste(klunk_imm.homo, collapse=" "), paste(imm_homo.all_genes, collapse=" ")))
+# Write file (make sure columns are in correct order)
+write.table(imm.ass, "output/gowinda_input/association_files/imm_association.gene.set_and.all.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+#head(imm.ass)
+```
+
+## Dehydration genes
+
+This data is from Table 2 in Kordonowy, L. and MacManes, M., 2017. Characterizing the reproductive transcriptomic correlates of acute dehydration in males in the desert-adapted rodent, Peromyscus eremicus. BMC genomics, 18(1), pp.1-20. they are a list of genes which are significantly differently expressed between dehydrated and hydrated Cactus mice (dessert adapted species) and from Table S3 of Giorello, F.M., Feijoo, M., D'Elía, G., Naya, D.E., Valdez, L., Opazo, J.C. and Lessa, E.P., 2018. An association between differential expression and genetic divergence in the Patagonian olive mouse (Abrothrix olivacea). Molecular Ecology, 27(16), pp.3274-3286 which lists 133 genes involved in 'classical water conservation pathways' identified in other studies.
+
+```{r}
+# Read in file
+## Kordonowy_and_MacManes
+Kordonowy_and_MacManes=unique(read_excel("output/gowinda_input/association_files/dehydration_genes/Kordonowy_and_MacManes_genes.xlsx", sheet="Sheet1")$Gene)
+Kordonowy_and_MacManes=toupper(Kordonowy_and_MacManes)
+## Giorello et al.
+#Giorello_et.al=unique(read_excel("output/gowinda_input/association_files/dehydration_genes/Giorello_et.al._genes.xlsx", sheet="Sheet1")$Gene)
+Giorello_et.al=read_excel("output/gowinda_input/association_files/dehydration_genes/mec14778-sup-0006-tables3.xls", sheet="TableS3")
+Giorello_et.al=unique(toupper(Giorello_et.al[4:nrow(Giorello_et.al),][[2]]))
+# Prepare file for gene name syncing
+dehy.for.sync=data.frame(Trait_ID="all.genes", Trait="all.genes", Genes=paste(unique(c(Kordonowy_and_MacManes, Giorello_et.al)), collapse=" "))
+write.table(dehy.for.sync, "output/gowinda_input/association_files/dehy_association.for.gene.name.sync.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+```
+
+#### Synonomous genes IDs
+
+```{bash}
+python2 ../bin/SynchronizeGtfGeneIDs.py \
+--gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+--gene-set output/gowinda_input/association_files/dehy_association.for.gene.name.sync.txt \
+--gene-aliases output/gowinda_input/annotation_files/synonymous.genids.txt \
+> output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_dehy.gtf
+```
+
+```{r}
+# Select only homologous genes
+dehy_homo.all_genes=unique(fread("output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_dehy.gtf")$V9)
+dehy_homo.all_genes=toupper(gsub('gene_id "|";|gene:', '', dehy_homo.all_genes))
+
+Kordonowy_and_MacManes.homo=Kordonowy_and_MacManes[Kordonowy_and_MacManes %in% dehy_homo.all_genes]
+Kordonowy_and_MacManes.homo=Kordonowy_and_MacManes.homo[order(Kordonowy_and_MacManes.homo)]
+
+Giorello_et.al.homo=Giorello_et.al[Giorello_et.al %in% dehy_homo.all_genes]
+Giorello_et.al.homo=Giorello_et.al.homo[order(Giorello_et.al.homo)]
+
+dehy_homo.all_genes=dehy_homo.all_genes[order(dehy_homo.all_genes)]
+dehy.ass=data.frame(Trait_ID=c("Kordonowy and MacManes (2017)", "Classical water conservation genes", "all_genes"), Trait=c("Kordonowy and MacManes (2017)", "Classical water conservation genes", "all_genes"), Genes=c(paste(Kordonowy_and_MacManes.homo, collapse=" "), paste(Giorello_et.al.homo, collapse=" "), paste(dehy_homo.all_genes, collapse=" ")))
+# Write file (make sure columns are in correct order)
+write.table(dehy.ass, "output/gowinda_input/association_files/dehy_association.gene.set_and.all.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+#head(dehy.ass)
+```
+
+## One massive association file
+
+```{r}
+ass_files=c("association_gominer.txt",
+            "KEGG.biosystems.gene.set_and.all.txt",
+            "REAC.biosystems.gene.set_and.all.txt",
+            "gwas_association.gene.set_and.all.txt",
+            "expr_association.gene.set_and.all.txt",
+            "phen_association.gene.set_and.all.txt",
+            "mergedlthtvip.gene.set_and.all.txt",
+            "pathogen_association.gene.set_and.all.txt",
+            "imm_association.gene.set_and.all.txt",
+            "dehy_association.gene.set_and.all.txt")
+big_file=NULL
+for(file in ass_files){
+  tmp_df=fread(paste0("output/gowinda_input/association_files/", file), header=FALSE)
+  if(is.null(big_file)){
+    big_file=tmp_df
+  }else{
+    big_file=rbind(big_file, tmp_df)
+  }
+}
+big_file=big_file[!(big_file$V1 %in% c("all_genes", "all.genes", "all") | big_file$V1 %in% c("all_genes", "all.genes", "all")),]
+
+all.for.sync=data.frame(Trait_ID="all.genes", Trait="all.genes", Genes=paste(unique(unlist(strsplit(big_file$V3, " "))), collapse=" "))
+write.table(all.for.sync, "output/gowinda_input/association_files/all_association.for.gene.name.sync.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+```
+
+```{bash}
+python2 ../bin/SynchronizeGtfGeneIDs.py \
+--gtf output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+--gene-set output/gowinda_input/association_files/all_association.for.gene.name.sync.txt \
+--gene-aliases output/gowinda_input/annotation_files/synonymous.genids.txt \
+> output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_all.gtf
+```
+
+```{r}
+# Select only homologous genes
+all_homo.all_genes=unique(fread("output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_all.gtf")$V9)
+all_homo.all_genes=toupper(gsub('gene_id "|";|gene:', '', all_homo.all_genes))
+
+big_file=rbind(big_file, data.frame(V1="all_genes", V2="all_genes", V3=paste(all_homo.all_genes, collapse=" ")))
+
+# Write file (make sure columns are in correct order)
+write.table(big_file, "output/gowinda_input/association_files/all_association.gene.set_and.all.txt",
+                col.names=F, row.names=F, quote = F,sep="\t")
+#head(big_file)
+```
+
+# Run GOWINDA
+
+## Parameter options
+
+From https://code.google.com/archive/p/gowinda/wikis/Manual.wiki:
+
+--annotation-file: a file containing the annotation for the species of interest. Only the .gtf format is accepted (see above). Mandatory parameter
+
+--gene-set-file: a file containing for every gene set (e.g.: Gene Ontology term) the associated genes; Mandatory parameter
+
+--snp-file: a file containing the total set of SNPs that were used for the GWAS. For the file format see above; Mandatory parameter
+
+  Tab delimited file with two columns; chromosome and position
+  
+--candidate-snp-file: a file containing the candidate SNPs that show some association with the trait of interest. For the file format see above; Mandatory parameter
+
+  Tab delimited file with two columns; chromosome and position
+  
+--output-file: where to store the output. Mandatory parameter
+
+--mode: As a major feature Gowinda offers two main analysis modes either snp or gene; Optional parameter; default=gene
+
+  Analysis mode gene: Multiple SNPs in a gene mean the gene is counted only once. Genes are treated as haplotype blocks.
+  
+    Based on the assumption that all SNPs within a gene are completely linked
+  
+  Analysis mode SNP: Multiple SNPs in a gene mean the gene is counted multiple times.
+  
+    Based on the extreme assumption that all SNPs are independent, i.e.: in linkage equilibrium
+
+--gene-definition: As another major feature Gowinda allows to adjust the SNP to gene mapping, i.e.: to decide which genes are associated with a given SNP. Mandatory parameter
+
+  exon: SNPs within exons are associated with genes
+  
+  cds: SNPs within CDS are associated with genes
+   
+  utr: SNPs within 5'-UTR and 3'-UTR are associated with genes. Calculated as exon - cds
+
+  gene: SNPs within exons or introns are associated with genes. Internally the distance from the start position of the first exon to the end position of the last exon is computed
+  
+  upstreamDDDD: in addition to exons and introns also the DDDD bases upstream the start of a gene are considered for mapping a SNP to a gene. DDDD must be replaced with an arbitrary number. This method requires the strand information.
+  
+  downstreamDDDD: in addition to exons and introns also the DDDD bases downstream of the end of the gene are considered for mapping a SNP to a gene. DDDD must be replaced with an arbitrary number. This method requires the strand information.
+  
+  updownstreamDDDD: in addition to exons and introns also the DDDD bases upstream the start of a gene and the DDDD bases downstream of the end of a gene are considered for mapping a SNP to a gene. DDDD must be replaced with an arbitrary number. This method does NOT require strand information.
+
+--simulations: the number of simulations that should be performed. For more information on the number of simulation see below
+
+  More simulations -> more accuracy -> lower possible p value. NB: more simulations does not result in more enriched categories.
+
+--min-genes: filter for GO categories having at least --min-genes number of genes; This parameter is for example useful to remove small GO categories having only one associated gene; Optional parameter; default=1
+
+--min-significance: only report GO categories having after FDR correction p-value <= --min-significance; Optional parameter; default=1.0
+
+--detailed-log: switch to the detailed log mode. The IDs of genes present in the GO association file but not present in the annotation will be displayed. Also the progress of the simulations will be shown in steps of 10.000; Optional parameter
+
+--threads: the simulations of Gowinda utilize multi-threading. Adjust the number of threads to use. Optional parameter; default=1
+
+--help: show the help for Gowinda; Optional parameter
+
+#### Parameter decsions
+
+##### --mode gene
+
+Mode SNPs relies on the very incorrect assumption of linkage equilibrium. Mode gene is also consitant with Harvi's and Josh's papers.
+
+##### --gene-definition updownstream5000
+
+Although we expect sites to not be more than the length of a read (150bp) away from an exon as we are only using on target reads, the GTF from GFF has slightly different coordinates to the BED file defining the 'on target' regions and so I increase this to 5kb to account for this (as recommended by Aida) and to include the regulatory regions of a gene.
+
+#### --min-genes 3
+
+To be consistent with Josh's and Harvi's papers
+
+### Shell script
+
+I have made a shell script which takes command line arguments (they have to be single letters as I am using the built in getopts):
+
+- g -> Geneset
+
+- f -> geneset File
+
+- a -> Annotation
+
+- s -> Suffix
+
+Needs to be run from the directory `/Users/harrisonostridge/OneDrive\ -\ University\ College\ London/Projects/PanAf/Ostridge_PanAf/gowinda/baypass_core/` ie run like this `./scripts/run_gowinda-cov_cor.sh`.
+
+## Shell script
+
+I have made a shell script which takes command line arguments (they have to be single letters as I am using the built in getopts):
+
+Needs to be run from the directory `/Users/harrisonostridge/OneDrive\ -\ University\ College\ London/Projects/Ostridge_PanAf/gowinda/` i.e. run like this `./scripts/run_gowinda.sh`.
+
+#### `/Users/harrisonostridge/OneDrive - University College London/Projects/PanAf/Ostridge_PanAf/gowinda/scripts/run_gowinda.sh`
+
+```{bash eval=FALSE}
+#!/bin/sh
+
+# Read in command line arguments
+while getopts ":b:c:g:a:o:" opt; do
+        case $opt in
+        b) BG_SNP="$OPTARG"
+        ;;
+        c) CAND_SNP="$OPTARG"
+        ;;
+        g) GENE_SET="$OPTARG"
+        ;;
+        a) ANNOTATION="$OPTARG"
+        ;;
+        o) OUTPUT="$OPTARG"
+        ;;
+        \?) echo "Invalid option -$OPTARG" >&2
+        ;;
+        esac
+done
+
+# Run gowinda
+## Remove log file if it already exists
+rm ${OUTPUT}_log.txt
+echo '### Background SNP file' ${BG_SNP} '\n' >${OUTPUT}_log.txt
+echo '### Candidate SNP file' ${CAND_SNP} '\n' >>${OUTPUT}_log.txt
+echo '### Gene set file ' ${GENESET} '\n' >>${OUTPUT}_log.txt
+echo '### Annotation file ' ${ANNOTATION} '\n' >>${OUTPUT}_log.txt
+echo '### Output file' ${OUTPUT} '\n' >>${OUTPUT}_log.txt
+## Run gowinda
+java -Xmx4g -jar bin/Gowinda-1.12.jar \
+--snp-file ${BG_SNP} \
+--candidate-snp-file ${CAND_SNP} \
+--gene-set-file ${GENE_SET} \
+--annotation-file ${ANNOTATION} \
+--simulations 100000 \
+--min-significance 1 \
+--gene-definition updownstream5000 \
+--threads 8 \
+--mode gene \
+--min-genes 3 \
+--output-file ${OUTPUT} 2>&1 | tee -a ${OUTPUT}_log.txt
+```
+
+## Run Gowinda
+
+**It is best to just copy and paste the chunks into the terminal.**
+
+### General datasets
+
+#### GO
+
+```{bash eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/association_gominer.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_go.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.go
+    done
+  done
+```
+
+#### KEGG
+
+```{bash eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/KEGG.biosystems.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.kegg
+    done
+  done
+```
+
+#### Reactome
+
+```{bash eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/REAC.biosystems.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.reac
+    done
+  done
+```
+
+#### GWAS
+
+```{bash eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/gwas_association.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_gwas.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.gwas
+    done
+  done
+```
+
+#### Tissue expression
+
+```{bash eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/expr_association.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_expr.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.expr
+    done
+  done
+```
+
+#### Tissue expression - semi-unique
+
+```{bash eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/expr.5overlap_association.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_expr.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.expr.5overlap
+    done
+  done
+```
+
+#### Phenotype database
+
+```{bash eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/phen_association.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_phen.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.phen
+    done
+  done
+```
+
+### Pathogen datasets
+
+#### VIPs
+
+```{bash eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/mergedlthtvip.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.vips
+    done
+  done
+```
+
+#### Hypothesis Driven Pathogens (including ebel 2017)
+
+```{bash eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/pathogen_ebel2017_association.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_pathogen_ebel2017.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.pathogen_ebel2017
+    done
+  done
+```
+
+#### Immunity Genes
+
+```{bash  eval=FALSE}
+for SUBSP in c e
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/imm_association.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_imm.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.imm
+    done
+  done
+```
+
+### Dehydration
+
+```{bash eval=FALSE}
+for SUBSP in all ce n w
+  do
+  # Add output directory
+  mkdir baypass_core/output/gowinda_output/${SUBSP}
+  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
+    do
+    #SUFFIX=${TAIL}-cov_cor
+    SUFFIX=${TAIL}
+    # Run BayPass
+    scripts/run_gowinda.sh \
+    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
+    -g baypass_core/output/gowinda_input/association_files/dehy_association.gene.set_and.all.txt \
+    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_dehy.gtf \
+    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.dehy
+    done
+  done
+```
+

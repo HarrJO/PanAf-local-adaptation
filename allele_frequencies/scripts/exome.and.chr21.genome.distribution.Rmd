@@ -1,0 +1,159 @@
+---
+title: "Exome and chr21 genome distribution"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/allele_frequencies/') 
+```
+
+#### Library
+```{r library, message=FALSE, warning=FALSE, echo=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+exome_out_dir="exome/output/"
+chr21_out_dir="chr21/output/"
+
+subsps=c('all', 'ce', 'n', 'w')
+```
+
+```{r echo=FALSE}
+snps=list()
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  for(miss.pop in c('0', '0.3')){
+    if(miss.pop=='0'){miss.pop2='0.0'}else{miss.pop2=miss.pop}
+    if(!(subsp=='n' & miss.pop=='0.3')){
+  
+    # AC 
+    snps[['exome']][[subsp]][[miss.pop]]=fread(paste0(exome_out_dir, "/f5", subsp.file ,".pops_minInd.6or50pct_missing.pops.", miss.pop,"/f5", 
+                                               subsp.file ,".pops.all.chrs_missing.pops.", miss.pop,"_pop.allele.counts_minMAC2"), header=T, select=c('chr', 'pos'))
+    snps[['exome']][[subsp]][[miss.pop]]$chr=gsub("chr", "", snps[['exome']][[subsp]][[miss.pop]]$chr)
+    
+    snps[['non-genic-chr21']][[subsp]][[miss.pop]]=fread(paste0(chr21_out_dir, "/chr21.f7", 
+                                                        subsp.file, ".pops_minInd.6or50pct_missing.pops.",miss.pop,
+                                                        "/chr21.f7", subsp.file, ".pops_chr21_missing.pops.",miss.pop2,"_pop.allele.counts_minMAC2.non-genic_1000bp.flanks"), header=T, select=c('chr', 'pos'))
+    snps[['chr21']][[subsp]][[miss.pop]]=fread(paste0(chr21_out_dir, "/chr21.f7", 
+                                                        subsp.file, ".pops_minInd.6or50pct_missing.pops.",miss.pop,
+                                                        "/chr21.f7", subsp.file, ".pops_chr21_missing.pops.",miss.pop2,"_pop.allele.counts_minMAC2"), header=T, select=c('chr', 'pos'))
+    snps[['chr21']][[subsp]][[miss.pop]]$chr=gsub("chr", "", snps[['chr21']][[subsp]][[miss.pop]]$chr)
+    }
+  }
+}
+
+subsp_names=list(
+  'all'='All Subspecies',
+  'ce'='Central-Eastern',
+  'c'='Central',
+  'e'='Eastern',
+  'n'='Nigeria-Cameroon',
+  'w'='Western')
+```
+
+
+```{r warning=FALSE, echo=FALSE}
+dist=list()
+dist.df=data.frame(subsp=c(), data=c(), dist=c(), miss_pops=c())
+for(subsp in subsps){
+  for(data in names(snps)){
+    for(miss_pop in names(snps[[data]][[subsp]])){
+      dist[[data]][[subsp]][[miss_pop]]=c()
+      for(chr in 1:22){
+        snps.chr=snps[[data]][[subsp]][[miss_pop]][snps[[data]][[subsp]][[miss_pop]]$chr==chr, 'pos']
+        snps.chr=snps.chr[order(snps.chr)]
+        if(length(snps.chr)>0){
+          dist.chr=snps.chr[2:length(snps.chr)]-snps.chr[1:(length(snps.chr)-1)]
+          
+          dist[[data]][[subsp]][[miss_pop]]=c(dist[[data]][[subsp]][[miss_pop]], dist.chr)
+        }
+      }
+      n=length(dist[[data]][[subsp]][[miss_pop]])
+      dist.df=rbind(dist.df,
+                    data.frame(subsp=rep(subsp_names[[subsp]], n), 
+                               data=rep(data, n), 
+                               dist=dist[[data]][[subsp]][[miss_pop]], 
+                               miss_pops=rep(miss_pop, n)))
+    }
+  }
+}
+
+
+xmax=min(head(dist.df$dist[order(-dist.df$dist)], length(dist.df$dist)*0.10))
+
+binwidth=200
+for(subsp in unique(dist.df$subsp)){
+  for(miss_pop in c('0', '0.3')){
+    plot=ggplot(dist.df[dist.df$subsp==subsp & dist.df$miss_pops==miss_pop,], aes(x=dist, col=subsp, linetype=data))+
+      theme_bw() +
+      theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5)) +
+      geom_vline(xintercept = median(dist.df[dist.df$subsp==subsp & 
+                                               dist.df$data=='exome' & 
+                                               dist.df$miss_pops==miss_pop, 'dist']), linetype = "dashed", col='grey50')+
+      geom_vline(xintercept = median(dist.df[dist.df$subsp==subsp & 
+                                               dist.df$data=='chr21'& 
+                                               dist.df$miss_pops==miss_pop, 'dist']), linetype = "solid", col='grey50')+
+      stat_bin(aes(y = after_stat(density)), alpha=1, binwidth=binwidth, geom="step",
+                         position=position_nudge(x=0*binwidth)
+                     ) +
+      coord_cartesian(xlim = c(0, xmax)) +
+      labs(title=paste0("Missing populations:", miss_pop), x="Distance to next SNP", y="Density") +
+      scale_discrete_manual(name="Subspecies",aesthetics=c('colour', 'fill'), values = c("All Subspecies"='black', "Central-Eastern"='brown4', "Nigeria-Cameroon"='red', "Western"='blue')) 
+    print(plot)
+  }
+}
+
+tmp=dist.df[dist.df$subsp==subsp & dist.df$miss_pops==miss_pop,]
+unique(tmp$data)
+```
+
+```{r warning=FALSE, echo=FALSE, eval=FALSE}
+# OLD - only miss posps 0.3
+dist=list()
+dist.df=data.frame(subsp=c(), data=c(), dist=c())
+for(subsp in subsps){
+  for(data in names(snps)){
+    dist[[data]][[subsp]]=c()
+    for(chr in 1:22){
+      snps.chr=snps[[data]][[subsp]][snps[[data]][[subsp]]$chr==chr, 'pos']
+      snps.chr=snps.chr[order(snps.chr)]
+      if(length(snps.chr)>0){
+        dist.chr=snps.chr[2:length(snps.chr)]-snps.chr[1:(length(snps.chr)-1)]
+        
+        dist[[data]][[subsp]]=c(dist[[data]][[subsp]], dist.chr)
+      }
+    }
+    dist.df=rbind(dist.df,
+                  data.frame(subsp=rep(subsp_names[[subsp]], length(dist[[data]][[subsp]])), data=rep(data, length(dist[[data]][[subsp]])), dist=dist[[data]][[subsp]]))
+  }
+}
+
+
+xmax=min(head(dist.df$dist[order(-dist.df$dist)], length(dist.df$dist)*0.10))
+
+binwidth=200
+for(subsp in unique(dist.df$subsp)){
+  plot=ggplot(dist.df[dist.df$subsp==subsp,], aes(x=dist, col=subsp, linetype=data))+
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5)) +
+    geom_vline(xintercept = median(dist.df[dist.df$subsp==subsp & dist.df$data=='exome', 'dist']), linetype = "dashed", col='grey50')+
+    geom_vline(xintercept = median(dist.df[dist.df$subsp==subsp & dist.df$data=='chr21', 'dist']), linetype = "solid", col='grey50')+
+    stat_bin(aes(y = after_stat(density)), alpha=1, binwidth=binwidth, geom="step",
+                       position=position_nudge(x=0*binwidth)
+                   ) +
+    coord_cartesian(xlim = c(0, xmax)) +
+    labs(x="Distance to next SNP", y="Density") +
+    scale_discrete_manual(name="Subspecies",aesthetics=c('colour', 'fill'), values = c("All Subspecies"='black', "Central-Eastern"='brown4', "Nigeria-Cameroon"='red', "Western"='blue')) 
+  print(plot)
+}
+```
+

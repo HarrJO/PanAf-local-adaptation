@@ -1,0 +1,259 @@
+---
+title: "Chr21 Sample Filtering: F7"
+author: "Harrison Ostridge"
+date: "16/06/2021"
+output: html_document
+---
+
+The purpose of this script  is to plot PCAs from the f6 filtered chr21 data i.e. chr21 data for each sample which passed exome filtering with the exception of one sample which has ~4% human contamination in chr21. This is to check there aren't any outliers we should be worried about.
+
+I end up identifying the same outliers as Claudia did and just remove those.
+
+#### Setup
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/sample_filtering/chr21/') 
+```
+
+#### Library
+```{r library, message=FALSE, warning=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(readxl)
+library(plyr)
+library(tidyr)
+library(stringr)
+library(igraph)
+library(RColorBrewer)
+library(grid) 
+library(gridExtra)
+library(fields)
+library(maps)
+library(mapdata)
+library(mapplots)
+library(RColorBrewer)
+library(MCMCpack)
+
+exome_filter_dir="../exome/output"
+output_dir="output/"
+pcangsd_output_dir="../../pcangsd/chr21/output/"
+```
+
+#### Read in data
+
+```{r}
+# Read in metadata
+f6_chr21=read.csv(paste0(output_dir, "/f6/f6.chr21.metadata.csv"), check.names = FALSE)
+f6_exome=read.csv(paste0(output_dir, "/f6/f6.metadata.csv"), check.names = FALSE)
+## Ensure it is in the correct order
+f6_chr21=f6_chr21[order(f6_chr21$Sample),]
+```
+
+## Population Structure
+
+### PCAngsd
+
+```{r}
+plot.PCA=function(subsps, meta.data, input.dir, output.file=NULL, label=NULL, return.df=FALSE){
+  # Create list to store result data frames in
+  results=list()
+  # BAM file lists are always given in alphabetical order (with respect to sample name) so it is important to ensure the samples are in this order
+  meta.data=meta.data[order(meta.data$Sample),]
+  # Add label column, if no column is provided a blank label column is used
+  meta.data$label=''
+  if(!is.null(label)){meta.data$label=meta.data[[label]]}
+  # Loop over each subspecies provided
+  for(subsp in subsps){
+    title=""
+    meta.data.subsp=meta.data
+    # Subspecies options
+    if(subsp=="c"){title="Central"}
+    if(subsp=="e"){title="Eastern"}
+    if(subsp=="n"){title="Nigeria-Cameroon"}
+    if(subsp=="w"){title="Western"}
+    if(subsp=="all"){title="All Samples"
+      # Group defines how to draw polygons
+      group="Subspecies"
+      input=paste0(input.dir,"chr21.f6.", subsp,".cov")}
+    if(subsp != "all"){
+      # Group defines how to draw polygons
+      group="Site"
+      input=paste0(input.dir, subsp,"/chr21.f6.", subsp,".cov")
+      if(title!=""){meta.data.subsp=meta.data[meta.data$Subspecies==title,]}}
+    # Read in PCAngsd output
+    cov=read.table(input)
+    pcs=eigen(cov)
+    # Select columns corresponding to PC1 and PC2
+    pc1.pc2=as.data.frame(pcs$vectors[,1:2])
+    colnames(pc1.pc2)=c("f6.PC1", "f6.PC2")
+    # Add PC1 and PC2 columns to metadata
+    ## The order of samples in PCAngsd output should be alphabetical as the BAM file lists were written in this order
+    pc1.pc2=cbind(meta.data.subsp, pc1.pc2)
+    # Percentage variance explained by PCs
+    PC1.percent=pcs$values[1]/sum(pcs$values)*100
+    PC2.percent=pcs$values[2]/sum(pcs$values)*100
+    # Plot
+    PC1.lab=paste("PC1 (", round(PC1.percent,digits = 2),"%)")
+    PC2.lab=paste("PC2 (", round(PC2.percent,digits = 2),"%)")
+    find_hull=function(pc1.pc2) pc1.pc2[chull(pc1.pc2[,'f6.PC1'], pc1.pc2[,'f6.PC2']), ]
+    hulls=ddply(pc1.pc2, group, find_hull)
+    # Plot all samples
+    if(subsp=="all"){
+      plot=ggplot(pc1.pc2, aes(x=f6.PC1, y=f6.PC2, fill=Subspecies, colour=Subspecies, label = label)) +
+        theme_minimal()+ 
+        geom_point(aes(shape=Subspecies), size = 2) + 
+        geom_text_repel(size = 3, min.segment.length = unit(0.1, "lines"), show.legend = FALSE) +
+        geom_polygon(data = hulls, alpha = 0.5) + 
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+        guides(fill=guide_legend(ncol=1)) + 
+        labs(x=paste(PC1.lab), y=paste(PC2.lab)) + 
+        ggtitle(title) +
+        scale_fill_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+        scale_color_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+        scale_shape_manual(values=0:4)
+    }
+    # Plot individual subspecies
+    else{
+      plot=ggplot(pc1.pc2, aes(x=f6.PC1, y=f6.PC2, fill=Site, colour=Site, label = label)) +
+        theme_minimal()+ 
+        geom_point(aes(shape=Site), size = 2) + 
+        geom_text_repel(size = 3, min.segment.length = unit(0.1, "lines"), show.legend = FALSE) +
+        geom_polygon(data = hulls, alpha = 0.5) + 
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+        guides(fill=guide_legend(ncol=1), shape=guide_legend(ncol=1)) + 
+        labs(x=paste(PC1.lab), y=paste(PC2.lab)) + 
+        ggtitle(title) +
+        scale_shape_manual(values=rep(0:6, 10))
+    }
+    # If an output file is provided, write to it
+    if(!is.null(output.file)){ggsave(paste0(output.file), plot=plot)}
+    # Display plot
+    print(plot)
+    # Save metadata with PC1 and PC2 columns added for the subspecies in results list
+    results[[subsp]]=pc1.pc2
+  }
+  # If return.df is set to TRUE, return the results list
+  if(return.df==T){return(results)}
+}
+```
+
+```{r message=FALSE, warning=FALSE, out.width="50%"}
+chr21_all=plot.PCA("all", 
+         f6_chr21,
+         paste0(pcangsd_output_dir, "/chr21.f6.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="Sample",
+         return.df = T)
+```
+
+
+```{r}
+chr21_all$all[(chr21_all$all$Subspecies=="Nigeria-Cameroon") & (chr21_all$all$f6.PC2>0), 
+              c("Sample", "Site", "Subspecies", "Coverage", "Human Contamination from Chr21")]
+```
+
+Kor1-35 clusters with western when it should cluster with western. This was removed in Claudia's paper for this reason. 
+
+```{r  message=FALSE, warning=FALSE, out.width="50%"}
+chr21_subsp=plot.PCA(c("c", "e", "n", "w"), 
+         f6_chr21,
+         paste0(pcangsd_output_dir, "/chr21.f6.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"),
+         label="Sample",
+         return.df = T)
+```
+
+NB: we see the MtSangbe-Sangaredi sample swap in westerns (Gco4-2) which we have account for and so is not a concern.
+
+```{r}
+chr21_subsp$e[chr21_subsp$e$Site=="Issa Valley" & chr21_subsp$e$f6.PC1<0, 
+              c("Sample", "Site", "Subspecies", "Coverage", "Human Contamination from Chr21")]
+
+chr21_subsp$w[chr21_subsp$w$Sample=='Gco4-2',]
+```
+
+The only concern is the Issa Valley sample Uga2-81 which does not cluster with the rest. This was removed in Claudia's paper for this reason. I think we should remove this.
+
+```{r}
+f7_chr21=f6_chr21[!(f6_chr21$Sample %in% c("Kor1-35","Uga2-81")),]
+f7_exome=f6_exome[!(f6_exome$Sample %in% c("Kor1-35","Uga2-81")),]
+```
+
+```{r}
+write.table(f7_exome, paste0(output_dir, "/f7/f7.metadata.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+write.table(f7_chr21, paste0(output_dir, "/f7/f7.chr21.metadata.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+
+f7_exome[f7_exome$Sample=='Gco4-2',]
+```
+
+#### Number of samples
+
+```{r}
+freq.per.group=data.frame(table(f7_exome$Population))
+sum(freq.per.group$Freq)
+sum(freq.per.group[freq.per.group$Freq>=8, 'Freq'])
+```
+
+#### Average coverage
+
+```{r}
+f5_exome=read.csv(paste0(exome_filter_dir, "/f5/f5.metadata.csv"), check.names = FALSE)
+cat("f5 Exome\n median:",median(f5_exome$Coverage), "\n mean:", mean(f5_exome$Coverage),
+    "\nf7 chr21\n median:",median(f7_chr21$Coverage), "\n mean:", mean(f7_chr21$Coverage))
+
+ggplot(NULL)+
+  geom_density(data=f5_exome, aes(x=Coverage, col="Exome"))+
+  geom_density(data=f7_chr21, aes(x=Coverage, col="chr21"))
+```
+
+### Write BAM file lists
+
+I am using the exome metadata file to write the bam file lists just because I have reassigned the sample swaps and defined populations already here.
+
+#### All
+
+```{r}
+# Ensure it is ordered according to sample name
+f7_exome=f7_exome[order(f7_exome$Sample),]
+# All
+write.table(f7_exome$chr21.BAM,
+            paste0(output_dir, "/bam.filelists/f7/bam.filelist.all"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+#### Subspecies
+
+```{r}
+# Central
+write.table(f7_exome[f7_exome$Subspecies=="Central",]$chr21.BAM, 
+            paste0(output_dir, "/bam.filelists/f7/bam.filelist.c"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Eastern
+write.table(f7_exome[f7_exome$Subspecies=="Eastern",]$chr21.BAM, 
+            paste0(output_dir, "/bam.filelists/f7/bam.filelist.e"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Nigeria-Cameroon
+write.table(f7_exome[f7_exome$Subspecies=="Nigeria-Cameroon",]$chr21.BAM, 
+            paste0(output_dir, "/bam.filelists/f7/bam.filelist.n"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Western
+write.table(f7_exome[f7_exome$Subspecies=="Western",]$chr21.BAM, 
+            paste0(output_dir, "/bam.filelists/f7/bam.filelist.w"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+#### Populations
+
+```{r}
+pops=unique(f7_exome$Population)
+for(pop in pops){
+  f7_exome.pop=f7_exome[f7_exome$Population==pop, ]
+  write.table(f7_exome.pop$chr21.BAM,
+              paste0(output_dir, "/bam.filelists/f7/bam.filelist.", pop),
+              row.names=FALSE, col.names=FALSE, quote=FALSE)
+}
+```
+
+```{bash eval=FALSE}
+scp -r output/bam.filelists/f7 myriad:/home/ucfajos/analysis/phase1and2_chr21_analysis/angsd/bam.filelists/
+```

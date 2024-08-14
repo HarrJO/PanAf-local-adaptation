@@ -1,0 +1,657 @@
+---
+title: "Plot Exome and chr21 SFS"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+The purpose of this script is to plot the SFS for the exome and chr21.
+
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/allele_frequencies/') 
+```
+
+#### Library
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+exome_out_dir="exome/output/"
+chr21_out_dir="chr21/output/"
+```
+
+#### Functions
+
+```{r}
+exome.vs.chr21.sfs=function(exome.ac, chr21.ac, subsps=NULL, fixed.sites=F){
+  subsps=c("", subsps)
+  for(subsp in subsps){
+    # Set title according to subspecies 
+    if(subsp==""){title="Total"}
+    if(subsp=="c"){title="Central"}
+    if(subsp=="e"){title="Eastern"}
+    if(subsp=="n"){title="Nigeria-Cameroon"}
+    if(subsp=="w"){title="Western"}
+    # Select columns corresponding to the subspecies
+    subsp.chr21.ac=chr21.ac[, grepl(paste0("^", subsp), names(chr21.ac))]
+    subsp.exome.ac=exome.ac[, grepl(paste0("^", subsp), names(exome.ac))]
+    # Calculate chr21 DAF
+    subsp.chr21.dac=subsp.chr21.ac[, grepl(".dac$", names(subsp.chr21.ac))]
+    subsp.chr21.aac=subsp.chr21.ac[, grepl(".aac$", names(subsp.chr21.ac))]
+    subsp.chr21.total.dac=rowSums(subsp.chr21.dac)
+    subsp.chr21.total.aac=rowSums(subsp.chr21.aac)
+    subsp.chr21.total.daf=subsp.chr21.total.dac/(subsp.chr21.total.dac+subsp.chr21.total.aac)
+    # Calculate exome DAF
+    subsp.exome.dac=subsp.exome.ac[, grepl(".dac$", names(subsp.exome.ac))]
+    subsp.exome.aac=subsp.exome.ac[, grepl(".aac$", names(subsp.exome.ac))]
+    subsp.exome.total.dac=rowSums(subsp.exome.dac)
+    subsp.exome.total.aac=rowSums(subsp.exome.aac)
+    subsp.exome.total.daf=subsp.exome.total.dac/(subsp.exome.total.dac+subsp.exome.total.aac)
+    # Remove fixed sites?
+    if(fixed.sites==F){
+      subsp.exome.total.daf=subsp.exome.total.daf[subsp.exome.total.daf!=0 & subsp.exome.total.daf!=1]
+      subsp.chr21.total.daf=subsp.chr21.total.daf[subsp.chr21.total.daf!=0 & subsp.chr21.total.daf!=1]
+    }
+    # Plot - normal scale
+    SFS=ggplot(NULL) + 
+      theme_bw() +
+      # Density plots (bandwidth set very low to see all the lumps and bumps)
+      geom_density(aes(x=subsp.chr21.total.daf, col='Chr21'), alpha=0.3, bw=0.0001) +
+      geom_density(aes(x=subsp.exome.total.daf, col='Exome'), alpha=0.3, bw=0.0001) +
+      # General
+      labs(title=paste0(title,": Exome and Chr21 SFS"),x="DAF", y = "Density") +
+      theme(plot.title = element_text(hjust = 0.5), legend.text=element_text(size=10)) +
+      scale_discrete_manual(name='Data', values = c('Exome' = 'red', 'Chr21' = 'blue'), aesthetics = c("colour"))
+    # Plot - log scale
+    SFS.log=ggplot(NULL) + 
+      theme_bw() +
+      # Density plots (bandwidth set very low to see all the lumps and bumps)
+      geom_density(aes(x=subsp.chr21.total.daf, col='Chr21'), alpha=0.3, bw=0.0001) +
+      geom_density(aes(x=subsp.exome.total.daf, col='Exome'), alpha=0.3, bw=0.0001) +
+      # General
+      scale_y_log10() +
+      labs(title=paste0(title,": Exome and Chr21 SFS"), x="DAF", y = "Log Density") +
+      theme(plot.title = element_text(hjust = 0.5), legend.text=element_text(size=10)) +
+      scale_discrete_manual(name='Data', values = c('Exome' = 'red', 'Chr21' = 'blue'), aesthetics = c("colour"))
+    print(SFS)
+    print(SFS.log)
+  }
+}
+
+subsp_names=list(
+  'all'='All Subspecies',
+  'ce'='Central-Eastern',
+  'c'='Central',
+  'e'='Eastern',
+  'n'='Nigeria-Cameroon',
+  'w'='Western')
+```
+
+### All
+
+#### Full
+
+```{r message=FALSE, warning=FALSE, out.width="50%"}
+all.chr21.ac=read.table(paste0(chr21_out_dir, "/chr21.f7.pops_minInd.6or50pct_missing.pops.0.3/chr21.f7.pops_chr21_missing.pops.0.3_pop.allele.counts_minMAC2"), header=T)
+all.exome.ac=read.table(paste0(exome_out_dir, "/f5.pops_minInd.6or50pct_missing.pops.0.3/f5.pops.all.chrs_missing.pops.0.3_pop.allele.counts_minMAC2"), header=T)
+
+exome.vs.chr21.sfs(all.exome.ac, all.chr21.ac, subsps=c("c", "e", "n", "w"))
+```
+
+### Central and Eastern
+
+```{r out.width="50%"}
+ce.chr21.ac=read.table(paste0(chr21_out_dir, "/chr21.f7.ce.pops_minInd.6or50pct_missing.pops.0.3/chr21.f7.ce.pops_chr21_missing.pops.0.3_pop.allele.counts_minMAC2"), header=T)
+ce.exome.ac=read.table(paste0(exome_out_dir, "/f5.ce.pops_minInd.6or50pct_missing.pops.0.3/f5.ce.pops.all.chrs_missing.pops.0.3_pop.allele.counts_minMAC2"), header=T)
+
+exome.vs.chr21.sfs(ce.exome.ac, ce.chr21.ac, subsps=c("c", "e"))
+```
+
+
+### Nigeria-Cameroon
+
+```{r out.width="50%"}
+n.chr21.ac=read.table(paste0(chr21_out_dir, "/chr21.f7.n.pops_minInd.6or50pct_missing.pops.0/chr21.f7.n.pops_chr21_missing.pops.0.0_pop.allele.counts_minMAC2"), header=T)
+n.exome.ac=read.table(paste0(exome_out_dir, "/f5.n.pops_minInd.6or50pct_missing.pops.0/f5.n.pops.all.chrs_missing.pops.0_pop.allele.counts_minMAC2"), header=T)
+
+exome.vs.chr21.sfs(n.exome.ac, n.chr21.ac)
+```
+
+### Western
+
+```{r out.width="50%"}
+w.chr21.ac=read.table(paste0(chr21_out_dir, "/chr21.f7.w.pops_minInd.6or50pct_missing.pops.0.3/chr21.f7.w.pops_chr21_missing.pops.0.3_pop.allele.counts_minMAC2"), header=T)
+w.exome.ac=read.table(paste0(exome_out_dir, "/f5.w.pops_minInd.6or50pct_missing.pops.0.3/f5.w.pops.all.chrs_missing.pops.0.3_pop.allele.counts_minMAC2"), header=T)
+
+exome.vs.chr21.sfs(w.exome.ac, w.chr21.ac)
+```
+
+# SFS per population
+
+```{r}
+sfs.per.population=function(ac, subsps=NULL, fixed.sites=F){
+  subsps=c("", subsps)
+  for(subsp in subsps){
+    # Set title according to subspecies 
+    if(subsp==""){title="Total"}
+    if(subsp=="c"){title="Central"}
+    if(subsp=="e"){title="Eastern"}
+    if(subsp=="n"){title="Nigeria-Cameroon"}
+    if(subsp=="w"){title="Western"}
+    # Select columns coresponding to the subspecies
+    subsp.ac=ac[, grepl(paste0("^", subsp), names(ac))]
+    subsp.ac=ac[, grepl(paste0("^", subsp), names(ac))]
+    subsp.dac=subsp.ac[, grepl(".dac$", names(subsp.ac))]
+    subsp.aac=subsp.ac[, grepl(".aac$", names(subsp.ac))]
+    subsp.total.dac=rowSums(subsp.dac)
+    subsp.total.aac=rowSums(subsp.aac)
+    subsp.total.daf=subsp.total.dac/(subsp.total.dac+subsp.total.aac)
+    # Remove fixed sites?
+    if(fixed.sites==F){
+      subsp.total.daf=subsp.total.daf[subsp.total.daf!=0 & subsp.total.daf!=1]
+      subsp.total.daf=subsp.total.daf[subsp.total.daf!=0 & subsp.total.daf!=1]
+    }
+    # Plot per population 
+    subsp.daf=as.matrix(subsp.dac)/(as.matrix(subsp.dac)+as.matrix(subsp.aac))
+    # Make into long format (for ggplot)
+    subsp.daf_long = gather(as.data.frame(subsp.daf))
+    # Remove pointless suffix of column names
+    subsp.daf_long$key=gsub("_chr1.dac", "", subsp.daf_long$key)
+    # Plot - normal
+    SFS=ggplot(subsp.daf_long) + 
+      theme_bw() +
+      geom_density(aes(x=value, col=key), alpha=0.3, bw=0.0001)+
+      labs(title=paste0(title,": SFS"),x="DAF", y = "Density") +
+      theme(plot.title = element_text(hjust = 0.5), legend.text=element_text(size=10)) +
+      scale_discrete_manual(name='Data', values = 1:ncol(subsp.dac), aesthetics = c("colour"))
+    # Plot - log scale
+    SFS.log=ggplot(subsp.daf_long) + 
+      theme_bw() +
+      geom_density(aes(x=value, col=key), alpha=0.3, bw=0.01)+
+      labs(title=paste0(title,": SFS"),x="DAF", y = "Density") +
+      theme(plot.title = element_text(hjust = 0.5), legend.text=element_text(size=10)) +
+      scale_discrete_manual(name='Data', values = 1:ncol(subsp.dac), aesthetics = c("colour")) +
+      scale_y_log10()
+    print(SFS)
+    print(SFS.log)
+  }
+}
+```
+
+NB: errors such as '## Warning: Removed 1262248 rows containing non-finite values (stat_density).' I think are just due to the fact that missing data is given as 0 derived and ancestral allele count and 0/0 is undefined.
+
+## Exome 
+
+### All
+
+```{r message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+sfs.per.population(all.exome.ac, subsps=c("c", "e", "n", "w"))
+```
+
+### Central and Eastern
+
+```{r message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+sfs.per.population(ce.exome.ac, subsps=c("c", "e"))
+```
+
+### Nigeria-Cameroon
+
+```{r message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+sfs.per.population(n.exome.ac)
+```
+
+### Western
+
+```{r message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+sfs.per.population(w.exome.ac)
+```
+
+## Chr21 
+
+### All
+
+```{r message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+sfs.per.population(all.chr21.ac, subsps=c("c", "e", "n", "w"))
+```
+
+### Central and Eastern
+
+```{r message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+sfs.per.population(ce.chr21.ac, subsps=c("c", "e"))
+```
+
+### Nigeria-Cameroon
+
+```{r message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+sfs.per.population(n.chr21.ac)
+```
+
+### Western
+
+```{r message=FALSE, warning=FALSE, out.width="50%", eval=FALSE}
+sfs.per.population(w.chr21.ac)
+```
+
+
+# Subspecies DAF differences
+
+```{r}
+n_bins=20
+# Combine datasets
+all.chr21.ac$data='chr21'
+all.exome.ac$data='exome'
+colnames(all.chr21.ac)=gsub("_chr21", "", colnames(all.chr21.ac))
+colnames(all.exome.ac)=gsub("_chr1", "", colnames(all.exome.ac))
+all.ac=rbind(all.exome.ac, all.chr21.ac)
+
+subsps=c('c', 'e', 'n', 'w')
+for(subsp in subsps){
+  # Select columns corresponding to the subspecies
+  subsp.ac=all.ac[, grepl(paste0("^", subsp), names(all.ac))]
+  # Calculate  DAF
+  subsp.dac=subsp.ac[, grepl(".dac$", names(subsp.ac))]
+  subsp.aac=subsp.ac[, grepl(".aac$", names(subsp.ac))]
+  subsp.total.dac=rowSums(subsp.dac)
+  subsp.total.aac=rowSums(subsp.aac)
+  subsp.total.daf=subsp.total.dac/(subsp.total.dac+subsp.total.aac)
+  # Save
+  all.ac$place_holder=NA
+  colnames(all.ac)[colnames(all.ac)=='place_holder']=paste0(subsp, "_daf")
+  all.ac[[paste0(subsp, "_daf")]]=subsp.total.daf
+}
+all.ac$c.e.daf.diff=all.ac$c_daf-all.ac$e_daf
+all.ac$c.n.daf.diff=all.ac$c_daf-all.ac$n_daf
+all.ac$c.w.daf.diff=all.ac$c_daf-all.ac$w_daf
+all.ac$e.n.daf.diff=all.ac$e_daf-all.ac$n_daf
+all.ac$e.w.daf.diff=all.ac$e_daf-all.ac$w_daf
+all.ac$n.w.daf.diff=all.ac$n_daf-all.ac$w_daf
+
+# Remove all NAs - this is from when DAC and AAC = 0 (i.e. data is missing for a whole subspecies) this is very rare
+all.ac=all.ac[complete.cases(all.ac),]
+library(dplyr)
+freq_df.out=NULL
+for(col in colnames(all.ac)[grepl("daf.diff$", colnames(all.ac))]){
+  # Bin values
+  all.ac$bin=cut(all.ac[[col]], breaks = seq(-1, 1, 2/n_bins), include.lowest=T)
+  freq_df=all.ac %>%
+    group_by(data, bin) %>%
+    summarise(frequency = n())
+  freq_df$total=NA
+  freq_df[freq_df$data=='chr21', 'total']=sum(freq_df[freq_df$data=='chr21','frequency'])
+  freq_df[freq_df$data=='exome', 'total']=sum(freq_df[freq_df$data=='exome','frequency'])
+  # Calculate frequency as a proportion of all SNPs in each dataset
+  freq_df$proportion=freq_df$frequency/freq_df$total
+  # Reshape
+  freq_df=spread(freq_df[c('bin', 'data', 'proportion')], key = data, value = proportion)
+  # Calculate ratio
+  freq_df$exome_to_chr21_ratio=freq_df$exome/freq_df$chr21
+  # Plot
+  if(col=="c.e.daf.diff"){title="Central DAF - Eastern DAF"}
+  if(col=="c.n.daf.diff"){title="Central DAF - Nigeria-Cameroon DAF"}
+  if(col=="c.w.daf.diff"){title="Central DAF - Western DAF"}
+  if(col=="e.n.daf.diff"){title="Eastern DAF - Nigeria-Cameroon DAF"}
+  if(col=="e.w.daf.diff"){title="Eastern DAF - Western DAF"}
+  if(col=="n.w.daf.diff"){title="Nigeria-Cameroon DAF - Eastern DAF"}
+  plot=ggplot(freq_df, aes(x=bin, y=exome_to_chr21_ratio))+
+    theme_bw()+
+    theme(plot.title = element_text(hjust = 0.5),
+          axis.text.x = element_text(angle = 45, hjust = 1))+
+    labs(title=title, x="DAF Difference", y="Exome:non-genic-chr21 ratio")+
+    geom_point() +
+    geom_hline(yintercept = 1, linetype = "dotted")
+  print(plot)
+  
+  freq_df$subsps=col
+  if(is.null(freq_df.out)){
+    freq_df.out=freq_df
+  }else{
+    freq_df.out=rbind(freq_df.out,freq_df)
+  }
+}
+
+ggplot(freq_df.out, aes(x=bin, y=exome_to_chr21_ratio, col=subsps))+
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(title="Subspecies DAF differences", x="DAF Difference", y="Exome:non-genic-chr21 ratio")+
+  geom_line(aes(group = subsps)) +
+  geom_point(size=1) +
+  geom_hline(yintercept = 1, linetype = "dotted")
+```
+
+```{r}
+all.ac$chr_pos=paste(all.ac$chr, all.ac$pos, sep="_")
+all.ac[all.ac$chr_pos=='chr11_5254366', grepl('daf', colnames(all.ac))]
+```
+
+# Witin subspecies DAF differences
+
+```{r warning=FALSE, fig.width=6, fig.height=3}
+input=list()
+input[['all']][['exome']]=all.exome.ac
+input[['all']][['chr21']]=all.chr21.ac
+input[['ce']][['exome']]=ce.exome.ac
+input[['ce']][['chr21']]=ce.chr21.ac
+input[['n']][['exome']]=n.exome.ac
+input[['n']][['chr21']]=n.chr21.ac
+input[['w']][['exome']]=w.exome.ac
+input[['w']][['chr21']]=w.chr21.ac
+
+get_ratio=function(out, subsp, freq_df.out, min=0, max=1){
+  # Remove NA values (that come from missing data where AC=o and so DAC/(AAC+DAC) is undefined)
+  out=out[complete.cases(out),]
+  # Bin values
+  out$bin=cut(out$daf.diff, breaks = seq(min, max, 0.1), include.lowest=T)
+  freq_df=out %>%
+    group_by(data, bin) %>%
+    dplyr::summarise(frequency = n())
+  freq_df$total=NA
+  freq_df[freq_df$data=='chr21', 'total']=sum(freq_df[freq_df$data=='chr21','frequency'])
+  freq_df[freq_df$data=='exome', 'total']=sum(freq_df[freq_df$data=='exome','frequency'])
+  # Calculate frequency as a proportion of all SNPs in each dataset
+  freq_df$proportion=freq_df$frequency/freq_df$total
+  # Reshape
+  ## Keep frequency
+  freq_df_2=spread(freq_df[c('bin', 'data', 'frequency')], key = data, value = frequency)
+  colnames(freq_df_2)[colnames(freq_df_2)!='bin']=paste0(colnames(freq_df_2)[colnames(freq_df_2)!='bin'], "_freq")
+  freq_df=spread(freq_df[c('bin', 'data', 'proportion')], key = data, value = proportion)
+  
+  freq_df=merge(freq_df, freq_df_2, by='bin')
+  #freq_df=spread(freq_df[c('bin', 'data', 'frequency')], key = data, value = frequency)
+  # Calculate ratio
+  freq_df$exome_to_chr21_ratio=freq_df$exome/freq_df$chr21
+  # Add to output
+  freq_df$subsps=subsp
+  freq_df.out=rbind(freq_df.out,freq_df)
+  return(freq_df.out)
+}
+
+DAF.diff.pops=function(input, max_snps=10000, min=0, max=1){
+  set.seed(123)
+  freq_df.out=data.frame("bin"=c(), "chr21"=c(), "exome"=c(), "chr21_freq"=c(), "exome_freq"=c(), "exome_to_chr21_ratio"=c())
+  freq_df.out.max=data.frame("bin"=c(), "chr21"=c(), "exome"=c(), "chr21_freq"=c(), "exome_freq"=c(), "exome_to_chr21_ratio"=c())
+  i=1
+  for(subsp in names(input)){
+    cat("Subspecies ", i, "/", length(names(input)), "\n")
+    i=i+1
+    
+    daf=list()
+    pair.diff=list()
+    pair.diff.max=list()
+    out=data.frame("data"=c(), "daf.diff"=c())
+    out.max=data.frame("data"=c(), "daf.diff"=c())
+    for(data in names(input[[subsp]])){
+      dac=input[[subsp]][[data]][, grepl(".dac$", names(input[[subsp]][[data]]))]
+      aac=input[[subsp]][[data]][, grepl(".aac$", names(input[[subsp]][[data]]))]
+      daf[[data]]=as.matrix(dac)/(as.matrix(dac)+as.matrix(aac))
+    
+      pair.diff[[data]]=c()
+      pair.diff.max[[data]]=c()
+      for(snp in sample(nrow(daf[[data]]), min(max_snps, nrow(daf[[data]])))){
+        if(min<0){
+          pair.diff.snp=outer(daf[[data]][snp,], daf[[data]][snp,], `-`)
+          pair.diff.snp=pair.diff.snp[lower.tri(pair.diff.snp)]
+        }else{
+          pair.diff.snp=as.numeric(dist(daf[[data]][snp,]))
+        }
+        # Max diff
+        pair.diff.snp.max=max(abs(pair.diff.snp), na.rm = T)
+        
+        pair.diff[[data]]=c(pair.diff[[data]], pair.diff.snp)
+        pair.diff.max[[data]]=c(pair.diff.max[[data]], pair.diff.snp.max)
+      }
+      out=rbind(out, data.frame("data"=rep(data, length(pair.diff[[data]])), "daf.diff"=pair.diff[[data]]))
+      out.max=rbind(out.max, data.frame("data"=rep(data, length(pair.diff.max[[data]])), "daf.diff"=pair.diff.max[[data]]))
+    }
+    # Function
+    freq_df.out=get_ratio(out=out, subsp=subsp, freq_df.out=freq_df.out, min=min, max=max)
+    freq_df.out.max=get_ratio(out=out.max, subsp=subsp, freq_df.out=freq_df.out.max, min=min, max=max)
+  }
+  freq_df.out=freq_df.out[complete.cases(freq_df.out),]
+  freq_df.out$subsps=unlist(subsp_names[freq_df.out$subsps])
+  freq_df.out.max=freq_df.out.max[complete.cases(freq_df.out.max),]
+  freq_df.out.max$subsps=unlist(subsp_names[freq_df.out.max$subsps])
+  # Plot
+  plot1=ggplot(freq_df.out, aes(x=bin, y=exome_to_chr21_ratio, col=subsps))+
+    theme_bw()+
+    theme(plot.title = element_text(hjust = 0.5),
+          axis.text.x = element_text(angle = 45, hjust = 1))+
+    labs(title="Pairwise DAF differences between populations", x="Absolute DAF Difference", y="Exome:non-genic-chr21 ratio") +
+    geom_line(aes(group=subsps)) +
+    geom_point(size=1) +
+    geom_hline(yintercept = 1, linetype = "dotted") +
+    ylim(0, NA)+
+    scale_discrete_manual(name="Subspecies", aesthetics=c('colour', 'fill'), values = c("All Subspecies"='black', "Central-Eastern"='brown4', "Nigeria-Cameroon"='red', "Western"='blue')) 
+  print(plot1)
+  
+  plot2=ggplot(freq_df.out.max, aes(x=bin, y=exome_to_chr21_ratio, col=subsps))+
+    theme_bw()+
+    theme(plot.title = element_text(hjust = 0.5),
+          axis.text.x = element_text(angle = 45, hjust = 1))+
+    labs(title="Maximum DAF differences between populations", x="Absolute DAF Difference", y="Exome:non-genic-chr21 ratio") +
+    geom_line(aes(group=subsps)) +
+    geom_point(size=1) +
+    geom_hline(yintercept = 1, linetype = "dotted")+
+    ylim(0, NA)+
+    scale_discrete_manual(name="Subspecies", aesthetics=c('colour', 'fill'), values = c("All Subspecies"='black', "Central-Eastern"='brown4', "Nigeria-Cameroon"='red', "Western"='blue')) 
+  print(plot2)
+  return(freq_df.out)
+}
+
+#out_df=DAF.diff.pops(input, max_snps=10000, min=-1)
+out_df=DAF.diff.pops(input, max_snps=20000, min=0)
+```
+
+```{r warning=FALSE}
+subsp='n'
+input.n=list()
+daf.n=list()
+for(data in c('exome', 'chr21')){
+  dac=input[[subsp]][[data]][, grepl(".dac$", names(input[[subsp]][[data]]))]
+  aac=input[[subsp]][[data]][, grepl(".aac$", names(input[[subsp]][[data]]))]
+  daf.n[[data]]=as.matrix(dac)/(as.matrix(dac)+as.matrix(aac))
+  input.n[[subsp]][[data]]=input[[subsp]][[data]][abs(daf.n[[data]][,1]-daf.n[[data]][,2])>0.3,]
+  
+  daf.n[[data]]=as.data.frame(daf.n[[data]])
+  daf.n[[data]]$data=data
+  daf.n[[data]]$daf.diff=daf.n[[data]][,1]-daf.n[[data]][,2]
+}
+
+daf.n.all=rbind(daf.n[['exome']][c('data', 'daf.diff')], daf.n[['chr21']][c('data', 'daf.diff')])
+
+ggplot(NULL)+
+  geom_density(aes(x=daf.n[['exome']][,1]-daf.n[['exome']][,2], col='exome')) +
+  geom_density(aes(x=daf.n[['chr21']][,1]-daf.n[['chr21']][,2], col='chr21'))
+
+out_df.tmp=DAF.diff.pops(input.n, max_snps=Inf, min=-1, max=1)
+```
+
+```{r warning=FALSE}
+subsp='n'
+input.n=list()
+daf.n=list()
+for(data in c('exome', 'chr21')){
+  dac=input[[subsp]][[data]][, grepl(".dac$", names(input[[subsp]][[data]]))]
+  aac=input[[subsp]][[data]][, grepl(".aac$", names(input[[subsp]][[data]]))]
+  daf.n[[data]]=as.matrix(dac)/(as.matrix(dac)+as.matrix(aac))
+  input.n[[subsp]][[data]]=input[[subsp]][[data]][abs(daf.n[[data]][,1]-daf.n[[data]][,2])>0.3,]
+  
+  daf.n[[data]]=as.data.frame(daf.n[[data]])
+  daf.n[[data]]$data=data
+  daf.n[[data]]$daf.diff=daf.n[[data]][,1]-daf.n[[data]][,2]
+}
+
+daf.n.all=rbind(daf.n[['exome']][c('data', 'daf.diff')], daf.n[['chr21']][c('data', 'daf.diff')])
+
+ggplot(NULL)+
+  geom_density(aes(x=daf.n[['exome']][,1]-daf.n[['exome']][,2], col='exome')) +
+  geom_density(aes(x=daf.n[['chr21']][,1]-daf.n[['chr21']][,2], col='chr21'))
+
+
+
+freq_df.out.n=data.frame("bin"=c(), "chr21"=c(), "exome"=c(), "chr21_freq"=c(), "exome_freq"=c(), "exome_to_chr21_ratio"=c())
+freq_df.out.n=get_ratio(daf.n.all, subsp='n', freq_df.out=freq_df.out.n, min=-1, max=1)
+freq_df.out.n$freq=paste0(freq_df.out.n$exome_freq, ":", freq_df.out.n$chr21_freq)
+plot1=ggplot(freq_df.out.n, aes(x=bin, y=exome_to_chr21_ratio, col=subsps))+
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(title="Pairwise DAF differences between populations", x="Absolute DAF Difference", y="Exome:non-genic-chr21 ratio") +
+  geom_line(aes(group=subsps)) +
+  geom_point(size=1) +
+  geom_hline(yintercept = 1, linetype = "dotted") +
+  geom_text(aes(y=rep(c(0, 0.25), nrow(freq_df.out.n))[1:nrow(freq_df.out.n)],label=freq), size=2) +
+  ylim(0, NA)
+print(plot1)
+
+
+
+out_df.tmp=DAF.diff.pops(input.n, max_snps=Inf)
+```
+
+# Downsample test
+
+```{r warning=FALSE}
+input_sub=list()
+for(subsp in names(input)){
+  if(subsp=='all'){pattern='^c_Conkouati|^w_Tai'}
+  if(subsp=='all'){pattern='^n_Gashaka|^n_KorupMtCameroon'}
+  if(subsp=='ce'){pattern='^c_Conkouati|^e_IssaValley'}
+  if(subsp=='n'){pattern='^n_Gashaka|^n_KorupMtCameroon'}
+  if(subsp=='w'){pattern='^w_Kayan|^w_Tai'}
+  for(data in names(input[[subsp]])){
+    input_sub[[subsp]][[data]]=input[[subsp]][[data]][,grepl(pattern, colnames(input[[subsp]][[data]]))]
+  }
+}
+tmp=DAF.diff.pops(input_sub, max_snps=5000)
+
+# look at number of SNPs in top bins in NC
+#tmp=DAF.diff.pops(input['n'], max_snps=500000)
+#tmp$n_chr21=tmp$chr21*nrow(input[['n']][['chr21']])
+#tmp$n_exome=tmp$exome*nrow(input[['n']][['exome']])
+```
+
+There are still a decent number of SNPs in the upper bins for N-C.
+
+0.9-1    178:38
+0.8-0.9  359:114
+0.7-0.8  765:350
+
+```{r warning=FALSE}
+input[['n']][['exome']]$n_Gashaka_chr1.ac=input[['n']][['exome']]$n_Gashaka_chr1.dac+input[['n']][['exome']]$n_Gashaka_chr1.aac
+input[['n']][['exome']]$n_Gashaka_chr1.daf=input[['n']][['exome']]$n_Gashaka_chr1.dac/input[['n']][['exome']]$n_Gashaka_chr1.ac
+input[['n']][['exome']]$n_KorupMtCameroon_chr1.ac=input[['n']][['exome']]$n_KorupMtCameroon_chr1.dac+input[['n']][['exome']]$n_KorupMtCameroon_chr1.aac
+input[['n']][['exome']]$n_KorupMtCameroon_chr1.daf=input[['n']][['exome']]$n_KorupMtCameroon_chr1.dac/input[['n']][['exome']]$n_KorupMtCameroon_chr1.ac
+
+input[['n']][['exome']]$daf_diff=abs(input[['n']][['exome']]$n_Gashaka_chr1.daf-input[['n']][['exome']]$n_KorupMtCameroon_chr1.daf)
+
+
+input[['n']][['exome']][input[['n']][['exome']]$daf_dif>0.9, ]
+table(input[['n']][['exome']][input[['n']][['exome']]$daf_dif>0.9, 'chr'])
+
+```
+
+Values seem pretty well spread across the genome.
+
+The fact that the same N-C pattern is observed when looking at these two populations in All tells me this is not an artefact. I think this could be biological. The fact that we do not see this in the BayPass analysis is because in a simple pair analysis you account for any difference between the populations.
+
+What if you take random pairs of populations?
+
+```{r warning=FALSE, fig.height=6, fig.width=10}
+pops=colnames(input[['all']][['exome']])
+pops=pops[!pops %in% c('chr', 'pos', 'data')]
+pops=unique(gsub(".dac|.aac", "", pops))
+
+pops=pops[sample(length(pops), length(pops))]
+pops=gsub("_chr1", "", pops)
+
+input_pair=list()
+i=1
+j=1
+while(i<=30){
+  #for(i in 1:15){
+  set.seed(j)
+  if(i==1){
+    cols=c("n_Gashaka", "n_KorupMtCameroon")
+  }else{
+    cols=pops[sample(length(pops), 2)]
+    cols=cols[order(cols)]
+  }
+  if(!paste(cols, collapse = "_vs_") %in% names(input_pair)){
+    #cols=pops[i:(i+1)]
+    for(data in names(input[['all']])){
+      tmp=input[['all']][[data]][,grepl(paste0("^", paste(cols, collapse = "|^")), colnames(input[['all']][[data]]))]
+      input_pair[[paste(cols, collapse = "_vs_")]][[data]]=tmp[rowSums(tmp)>0,]
+    }
+    i=i+1
+  }
+  j=j+1
+}
+#tmp=DAF.diff.pops(input_pair, max_snps=10000)
+tmp=DAF.diff.pops(input_pair, max_snps=5000, min=-1)
+tmp=DAF.diff.pops(input_pair, max_snps=5000, min=1)
+
+# look at number of SNPs in top bins in NC
+#tmp=DAF.diff.pops(input['n'], max_snps=500000)
+#tmp$n_chr21=tmp$chr21*nrow(input[['n']][['chr21']])
+#tmp$n_exome=tmp$exome*nrow(input[['n']][['exome']])
+```
+
+Is this specific to n_KorupMtCameroon?
+
+```{r warning=FALSE}
+input_pair=list()
+i=1
+j=1
+while(i<=20){
+  #for(i in 1:15){
+  set.seed(j)
+  cols=c('n_KorupMtCameroon', pops[sample(length(pops), 1)])
+  cols=cols[order(cols)]
+  if(!paste(cols, collapse = "_vs_") %in% names(input_pair) & paste(cols, collapse = "_vs_")!="n_KorupMtCameroon_vs_n_KorupMtCameroon"){
+    #cols=pops[i:(i+1)]
+    for(data in names(input[['all']])){
+      tmp=input[['all']][[data]][,grepl(paste0("^", paste(cols, collapse = "|^")), colnames(input[['all']][[data]]))]
+      input_pair[[paste(cols, collapse = "_vs_")]][[data]]=tmp[rowSums(tmp)>0,]
+      }
+    i=i+1
+  }
+  j=j+1
+}
+tmp=DAF.diff.pops(input_pair, max_snps=5000)
+```
+
+Or Gashaka?
+
+```{r warning=FALSE}
+input_pair=list()
+i=1
+j=1
+while(i<=20){
+  #for(i in 1:15){
+  set.seed(j)
+  cols=c('n_Gashaka', pops[sample(length(pops), 1)])
+  cols=cols[order(cols)]
+  if(!paste(cols, collapse = "_vs_") %in% names(input_pair) & paste(cols, collapse = "_vs_")!="n_KorupMtCameroon_vs_n_KorupMtCameroon"){
+    #cols=pops[i:(i+1)]
+    for(data in names(input[['all']])){
+      input_pair[[paste(cols, collapse = "_vs_")]][[data]]=input[['all']][[data]][,grepl(paste0("^", paste(cols, collapse = "|^")), colnames(input[['all']][[data]]))]
+    }
+    i=i+1
+  }
+  j=j+1
+}
+tmp=DAF.diff.pops(input_pair, max_snps=5000)
+```
+
+Maybe it's Gashaka driving this difference?
+
+Could this be due to the different sample sizes between Gashaka and KorupMtCameroon?
+
+chr21 has one fewer Korup

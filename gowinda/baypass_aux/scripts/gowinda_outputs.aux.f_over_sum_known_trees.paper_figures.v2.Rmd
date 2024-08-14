@@ -1,0 +1,923 @@
+### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/gowinda/baypass_aux/') 
+```
+
+### Parameters
+
+```{r}
+subsps=c('all', 'ce', 'w')
+env_data="f_over_sum_known_trees"
+covs=c('f_over_sum_known_trees')
+tails=c("fpr0.5pct.non-genic_1000bp.flanks", "fpr0.1pct.non-genic_1000bp.flanks", "fpr0.05pct.non-genic_1000bp.flanks")
+tails_suffixs=c(".pos_beta", ".neg_beta")
+```
+
+---
+title: "`r paste0("Gowinda Outputs: AUX - ", env_data, ": ", paste(subsps, collapse = ", "))`"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+This script plots the outputs from running Gowinda on the AUX candiadtes in `~/OneDrive - University College London/Projects/Ostridge_PanAf/gowinda/baypass_aux/scripts/run_gowinda.aux.general.Rmd`.
+
+### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(wesanderson)
+library(ggVennDiagram)
+library(UpSetR)
+library(tidyverse)
+library(ggh4x)
+library(ggvenn)
+library(RColorBrewer)
+library(plyr)
+library(grid)
+source("../baypass_core/scripts/plot_gowinda.R")
+# Set fread to read in as a data frame by default 
+options(datatable.fread.datatable=FALSE)
+
+gowinda_out_dir="output/gowinda_output/"
+```
+
+```{r}
+datasets=c("go", "kegg", "reac", "gwas", "expr", "phen", "vips", "pathogen_ebel2017", "imm", "dehy")
+```
+
+#### Plot all genesets significant at least once across datasets and thresholds
+
+The p_adjust option allows you to perform multiple testing correction across all gowinda runs if true. I do  not do this because...
+
+"Multiple testing corrections were done within each Gowinda run to account for the number of gene sets in each test (by calculating FDRs in Gowinda using the method described above) but not across Gowinda runs. This was done for two reasons. Firstly, each Gowinda analysis is not independent because the candidate tails are nested and the subspecies-specific subspecies-databases (Central-Eastern, Nigeria-Cameroon and Western) are all nested within All; therefore, multiple testing correction methods such as Benjamini and Hochberg correction (Benjamini and Hochberg 1995) would not be appropriate across this nested structure. Secondly, each gene set database is considered a separate analysis; the justification of this is that each is testing a different hypothesis. For example, there is a prior expectation for the importance of pathogens given previous results in chimpanzees (Pawar et al. 2022; Schmidt et al. 2019; Cagan et al. 2016), humans (Enard and Petrov 2018; Souilmi et al. 2021; Fumagalli et al. 2011) and other mammals (Enard et al. 2016). To test the hypothesis that chimpanzees show signatures of local adaptation to pathogens, I test for enrichment of 20 gene sets related to pathogens that are similar to pathogens known to infect wild chimpanzees; I argue it does not make sense to then correct for the fact that I also run a hypothesis-free test using 20,709 GO categories in a separate Gowinda analysis."
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="33%"}
+total_gowinda=NULL
+p_adjust=F
+#tails
+for(subsp in subsps){
+  for(tail in tails){
+    tail_name=NULL
+    if(grepl("0\\.5pct", tail)){
+      tail_name="0.5%"
+    }else if(grepl("0\\.1pct", tail)){
+      tail_name="0.1%"
+    }else if(grepl("0\\.05pct", tail)){
+      tail_name="0.05%"
+    }else if(grepl("0\\.01pct", tail)){
+      tail_name="0.01%"
+    }else if(grepl("0\\.005pct", tail)){
+      tail_name="0.005%"
+    }
+    for(cov in covs){
+      for(dataset in datasets){
+        if(dataset %in% c("go", "kegg", "reac", "gwas", "expr", "phen", "expr.3overlap", "expr.5overlap")){
+          category="General"
+        }else if(dataset %in% c("vips", "pathogen_ebel2017", "imm")){
+          category="Pathogens"
+        }else if(dataset %in% c("dehy")){
+          category="Dehydration"
+        }else{
+          category="Other"
+        }
+        for(tail_suffix in c("", ".pos_beta", ".neg_beta")){
+          direction=NULL
+          if(tail_suffix==""){direction="Both"}
+          if(tail_suffix==".pos_beta"){direction="Positive"}
+          if(tail_suffix==".neg_beta"){direction="Negative"}
+          df=data.frame()
+          gowinda_output_file=paste0(gowinda_out_dir, "/",env_data,"/",subsp,".",env_data,"-",cov,".",tail,tail_suffix,".gowinda_out.", dataset)
+          if(file.exists(gowinda_output_file) & file.size(gowinda_output_file) > 0){
+            df=fread(gowinda_output_file, sep="\t", header=FALSE)
+            colnames(df)=c("gene_set", "expected_hits", "observed_hits", "p", "fdr", "No._candidate_genes_in_gene_set", 
+                           "No._genes_in_gene_set_and_annotation_and_snp", "No._genes_in_gene_set", "gene_set_description", "candidate_genes")
+            df=df[!(df$gene_set %in% c("all", "all_genes", "all.genes") | df$gene_set_description %in% c("all", "all_genes", "all.genes")),]
+          }
+          if(nrow(df)>0){
+            n=nrow(df)
+            rows=cbind(data.frame("Subspecies"=rep(subsp, n), "Tail"=rep(tail_name, n), "Covariable"=rep(cov, n), 
+                                  "Category"=rep(category, n), "Dataset"=rep(dataset, n), "Direction"=rep(direction, n)),
+                       df)
+            if(is.null(total_gowinda)){
+              total_gowinda=rows
+            }else{
+              total_gowinda=rbind(total_gowinda, rows)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+#dataset_order=c('phen', 'gwas')
+#total_gowinda$Dataset=factor(total_gowinda$Dataset, levels=c(dataset_order, unique(total_gowinda$Dataset)[!(unique(total_gowinda$Dataset) %in% dataset_order)]))
+
+total_gowinda$Tail=factor(total_gowinda$Tail, levels=c("0.5%", "0.1%", "0.05%" 
+                                                       #, "0.01%", "0.005%"
+                                                       ))
+total_gowinda$Direction=factor(total_gowinda$Direction, levels=c("Both", "Positive", "Negative"))
+#total_gowinda$Dataset=factor(total_gowinda$Dataset, levels=datasets)
+total_gowinda$Category=factor(total_gowinda$Category, levels=c("General", "Pathogens", "Dehydration", "Other"))
+#total_gowinda=total_gowinda[total_gowinda$Category!="Other" & total_gowinda$Dataset!="go",]
+#total_gowinda=total_gowinda[total_gowinda$Category!="Other",]
+
+# Capitalise first letter
+firstup=function(x) {
+  substr(x, 1, 1) <- toupper(substr(x, 1, 1))
+  x
+}
+total_gowinda$gene_set_description=firstup(total_gowinda$gene_set_description)
+
+if(p_adjust){
+  p_adjust_list=list()
+  for(subsp in unique(total_gowinda$Subspecies)){
+    for(tail in unique(total_gowinda$Tail)){
+      for(dir in unique(total_gowinda$Direction)){
+        tmp_df=total_gowinda[total_gowinda$Subspecies==subsp & total_gowinda$Tail==tail & total_gowinda$Direction==dir,]
+        tmp_df$fdr=p.adjust(tmp_df$p, method = "BH")
+        p_adjust_list=append(p_adjust_list, list(tmp_df))
+      }
+    }
+  }
+  total_gowinda=do.call(rbind, p_adjust_list)
+}
+
+total_gowinda=data.frame(total_gowinda)
+```
+
+# MAIN PLOT
+
+#```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", fig.height=5, fig.width=5.5}
+#```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", fig.height=8, fig.width=7}
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", fig.height=3, fig.width=7}
+min_n_genes=2
+always_plot_dataset=c("")
+#always_plot_dataset=c("pathogen_ebel2017", "imm")
+#always_plot_dataset=c("vips")
+#directions=c("Both", "Positive", "Negative")
+directions=c("Positive", "Negative")
+#cell_fill='observed_hits'
+cell_fill='sig'
+
+heat_dir_list=list()
+heat_subsp_list=list()
+ratio_dir_list=list()
+ratio_subsp_list=list()
+
+# Add NAs for missing combinations
+## Note that we have to use 'gene_set' rather than 'gene_set_description' as there appear to be a few cases where 'gene_set_description' is the same across dataset, for example I think malaria
+## I use complete to make every possible combination and fill in NAs then re add the categories 'Dataset', 'Category', and 'gene_set_description' for which it did not make sense to completely shuffle as not all combinations are possible (i.e. a gene set always belongs to the same category and dataset)
+total_gowinda_comp=merge(complete(total_gowinda[total_gowinda$No._candidate_genes_in_gene_set >= min_n_genes & total_gowinda$Subspecies %in% c('all', 'ce', 'w', 'c', 'e'),
+                                                c('Subspecies', 'Tail', 'Covariable', 'gene_set', 'Direction', 'fdr', 'observed_hits', 'No._genes_in_gene_set_and_annotation_and_snp', 'expected_hits')], 
+                                  Subspecies, Tail, Covariable, gene_set, Direction), 
+                    unique(total_gowinda[,c('Dataset', 'Category', 'gene_set_description', 'gene_set')]), 
+                    by='gene_set')
+#total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.1, 'sig']=".\n" #·
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.05, 'sig']='*'
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.01, 'sig']='**'
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.001, 'sig']='***'
+
+## Set size of text in cells
+if(cell_fill=='sig'){
+  cell_fill_size=4
+  nudge=-0.33
+}else{
+  cell_fill_size=2.5
+  nudge=0
+  }
+
+for(thresh in 0.1){
+  cat(thresh, "\n")
+  for(cov in covs){
+    gene_sets=unique(total_gowinda_comp[total_gowinda_comp$Direction %in% directions & total_gowinda_comp$fdr<thresh,]$gene_set)
+    plot_df=total_gowinda_comp[total_gowinda_comp$Covariable==cov & total_gowinda_comp$gene_set %in% gene_sets | total_gowinda_comp$Dataset %in% always_plot_dataset,]
+    ## Trim the description so it isn't ridiculously long 
+    #plot_df$gene_set_description=strtrim(plot_df$gene_set_description, 50)
+    #####################################
+  
+    plot_df[plot_df$gene_set_description=="Chronic_obstructive_pulmonary_disease_or_resting_heart_rate_(pleiotropy)", 'gene_set_description']="COPD/resting_heart_rate"
+    plot_df[plot_df$gene_set_description=="Spherical_equivalent_(joint_analysis_main_effects_and_education_interaction)", 'gene_set_description']="Spherical_equivalent"
+    plot_df[plot_df$gene_set_description=="Normal_facial_asymmetry_(deformation_magnitude)", 'gene_set_description']="Normal_facial_asymmetry"
+    plot_df[plot_df$gene_set_description=="SARS-CoV-2: differential_RNA_expression", 'gene_set_description']="SARS-CoV-2: differential expression"
+    plot_df[plot_df$gene_set_description=="GWAS: Total bilirubin levels in HIV-1 infection", 'gene_set_description']="GWAS: Bilirubin levels in HIV-1 infection"
+    
+    ## Remove references
+    plot_df$gene_set_description=gsub(" \\(Klunk.*| \\(Rogers.*| \\(Deschamps.*| \\(Daub.*| \\(Ebel.*", 
+                                      "", plot_df$gene_set_description)
+    ## Replace "_" with space
+    plot_df$gene_set_description=gsub("_", " ", plot_df$gene_set_description)
+    ## Order datasets
+    #plot_df$Dataset=factor(plot_df$Dataset, levels=datasets)
+    ## Order genesets
+    gene_set_order=c("Breast", "Cervix", "Duodenum", "Oesophagus", "Lung", "Lymph node", "Soft tissue", "Urinary bladder",
+                     "Lung cancer in ever smokers", "COPD/resting heart rate", "Response to statin therapy", "Simvastatin-induced myopathy", 
+                     "Macular thickness", "Spherical equivalent", "Refractive errors",
+                     "Body mass index", "Normal facial asymmetry",
+                     "GWAS: AIDS progression", "SARS-CoV-2: differential expression",
+                     "Immunity genes", "Innate immunity genes", 
+                     "SARS-CoV-2: GWAS", #"SARS-CoV-2: host-protein interaction",
+                     "Malaria", "Malaria (erythrocyte genes)", "Malaria (conserved genes)")
+    gene_set_order=rev(gene_set_order)
+    gene_set_order=gene_set_order[gene_set_order %in% unique(plot_df$gene_set_description)]
+    other_gene_sets=unique(plot_df$gene_set_description[!(plot_df$gene_set_description %in% gene_set_order)])
+    plot_df$gene_set_description=factor(plot_df$gene_set_description, levels=c(other_gene_sets[order(other_gene_sets)], gene_set_order))
+    
+    #####################################
+    ## Rename
+    plot_df$Direction=as.character(plot_df$Direction)
+    plot_df[plot_df$Direction=="Positive", "Direction"]="Forest candidates"
+    plot_df[plot_df$Direction=="Negative", "Direction"]="Savannah candidates"
+    
+    plot_df[plot_df$Subspecies=="all", "Subspecies"]="All"
+    plot_df[plot_df$Subspecies=="ce", "Subspecies"]="C-E"
+    plot_df[plot_df$Subspecies=="n", "Subspecies"]="N"
+    plot_df[plot_df$Subspecies=="w", "Subspecies"]="W"
+    
+    # Rename
+    plot_df[plot_df$Dataset=="gwas", "Dataset"]="GWAS"
+    plot_df[plot_df$Dataset=="pathogen_ebel2017", "Dataset"]="Pathogen-rel."
+    plot_df[plot_df$Dataset=="expr", "Dataset"]="Tissue expr."
+    plot_df[plot_df$Dataset=="phen", "Dataset"]="Phenotype"
+    plot_df[plot_df$Dataset=="imm", "Dataset"]="Immunity"
+    plot_df[plot_df$Dataset=="go", "Dataset"]="GO"
+    plot_df[plot_df$Dataset=="reac", "Dataset"]="Reactome"
+    plot_df[plot_df$Dataset=="vips", "Dataset"]="VIPs"
+    plot_df[plot_df$Dataset=="kegg", "Dataset"]="KEGG"
+    plot_df[plot_df$Dataset=="dehy", "Dataset"]=""
+    plot_df[plot_df$Category=="dehy", "Category"]="Dehydration\nresponse"
+    
+    plot_df$gene_set=gsub("_", " ", plot_df$gene_set)
+    
+    plot_df[is.na(plot_df$observed_hits) | plot_df$observed_hits=="NA", 'observed_hits']=""
+    plot_df[is.na(plot_df$sig) | plot_df$sig=="NA", 'sig']=""
+    plot_df$observed_hits=paste0(plot_df$observed_hits, plot_df$sig)
+    
+    # Reorder
+    dataset_order=c('Phenotype', 'GWAS', "Immunity", "Pathogen\nresponse")
+    plot_df$Dataset=factor(plot_df$Dataset, levels=c(dataset_order, unique(plot_df$Dataset)[!(unique(plot_df$Dataset) %in% dataset_order)]))
+    plot_df=plot_df[plot_df$Direction %in% c("Savannah candidates", "Forest candidates"),]
+    plot_df$Direction=factor(plot_df$Direction, levels=c("Savannah candidates", "Forest candidates"))
+    plot_df=as.data.frame(plot_df)
+    main_plot=ggplot(plot_df, aes(x=Tail, y=gene_set_description, fill=fdr))+
+        theme_linedraw() +
+        theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), 
+              legend.title=element_text(size=7, hjust = 0.5), legend.text=element_text(size=7), 
+              axis.title.x = element_text(size=10),
+              axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size=6), axis.line = element_blank(), 
+              strip.text.y.left = element_text(angle = 0),
+              axis.text.y = element_text(size=6),
+              strip.background =element_rect(fill="white"), 
+              strip.text.x = element_text(colour = 'black', size=7), strip.text.y = element_text(colour = 'black', size=7),
+              panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+              panel.spacing = unit(0, "lines"), 
+              #legend.position = c(1.2, 1.11), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(6, 'mm')
+              #legend.position = c(1.3, 1.075), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(5, 'mm')
+              legend.position = c(1.2, 1.15), legend.box = "horizontal", legend.key.height= unit(1.75, 'mm'), legend.key.width= unit(4, 'mm')
+              #panel.spacing = unit(1, "lines")
+              ) +
+        labs(title=paste0(cov), x="Candidate FPR tails", y="") +
+        geom_tile() +
+        geom_text(aes_string(label=cell_fill), position=position_nudge(y = nudge), size=cell_fill_size) +
+        # Add point to indicate significance of 0.1
+        geom_point(data=plot_df[!is.na(plot_df$fdr) & plot_df$fdr<0.1 & plot_df$fdr>0.05,], size=0.05) +
+        scale_fill_gradientn(name = "FDR", colors = rev(wes_palette("Zissou1", type = "continuous")), na.value = "white", limits = c(0,1), 
+                             guide = guide_colourbar(direction = "horizontal", title.position = "top"), breaks = c(0, 0.5,1)) +
+        scale_y_discrete(position = 'right') +
+        #facet_grid(Dataset~Subspecies, scales = "free", space='free')
+        facet_nested(Category+Dataset~Direction+Subspecies, scales = "free", space='free', switch = "y")
+    # Add gaps between major facets - needs to be specified manually
+    gt =  ggplotGrob(main_plot)
+    gt$widths[16] = unit(1, "lines")
+    gt$heights[13] = unit(1, "lines")
+    plot(gt)
+  }
+}
+
+# Write supplementary file
+#write.csv(total_gowinda, "output/gowinda_output/f_over_sum_known_trees/formatted_output/gea_gowinda_results.csv", row.names = FALSE)
+
+#total_gowinda[grepl("conserved", total_gowinda$gene_set),]
+#total_gowinda[total_gowinda$fpr<thresh & total_gowinda$observed_hits>min_n_genes, ]
+#total_gowinda[total_gowinda$Subspecies=='n'& total_gowinda$Dataset=='pathogen_ebel2017',]
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", fig.height=1.8, fig.width=5}
+min_n_genes=2
+always_plot_dataset=c("")
+#always_plot_dataset=c("pathogen_ebel2017", "imm")
+#always_plot_dataset=c("vips")
+#directions=c("Both", "Positive", "Negative")
+directions=c("Positive", "Negative")
+#cell_fill='observed_hits'
+cell_fill='sig'
+
+heat_dir_list=list()
+heat_subsp_list=list()
+ratio_dir_list=list()
+ratio_subsp_list=list()
+
+# Add NAs for missing combinations
+## Note that we have to use 'gene_set' rather than 'gene_set_description' as there appear to be a few cases where 'gene_set_description' is the same across dataset, for example I think malaria
+## I use complete to make every possible combination and fill in NAs then re add the categories 'Dataset', 'Category', and 'gene_set_description' for which it did not make sense to completely shuffle as not all combinations are possible (i.e. a gene set always belongs to the same category and dataset)
+total_gowinda_comp=merge(complete(total_gowinda[total_gowinda$No._candidate_genes_in_gene_set >= min_n_genes & total_gowinda$Subspecies %in% c('all', 'ce', 'w', 'c', 'e'),
+                                                c('Subspecies', 'Tail', 'Covariable', 'gene_set', 'Direction', 'fdr', 'observed_hits', 'No._genes_in_gene_set_and_annotation_and_snp', 'expected_hits')], 
+                                  Subspecies, Tail, Covariable, gene_set, Direction), 
+                    unique(total_gowinda[,c('Dataset', 'Category', 'gene_set_description', 'gene_set')]), 
+                    by='gene_set')
+#total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.1, 'sig']=".\n" #·
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.05, 'sig']='*'
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.01, 'sig']='**'
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.001, 'sig']='***'
+
+## Set size of text in cells
+if(cell_fill=='sig'){
+  cell_fill_size=4
+  nudge=-0.33
+}else{
+  cell_fill_size=2.5
+  nudge=0
+  }
+
+for(thresh in 0.1){
+  cat(thresh, "\n")
+  for(cov in covs){
+    gene_sets=unique(total_gowinda_comp[total_gowinda_comp$Direction %in% directions & total_gowinda_comp$fdr<thresh,]$gene_set)
+    plot_df=total_gowinda_comp[total_gowinda_comp$Covariable==cov & total_gowinda_comp$gene_set %in% gene_sets | total_gowinda_comp$Dataset %in% always_plot_dataset,]
+    
+    
+    plot_df=plot_df[plot_df$Category!='General',]
+    
+    ## Trim the description so it isn't ridiculously long 
+    #plot_df$gene_set_description=strtrim(plot_df$gene_set_description, 50)
+    #####################################
+  
+    plot_df[plot_df$gene_set_description=="Chronic_obstructive_pulmonary_disease_or_resting_heart_rate_(pleiotropy)", 'gene_set_description']="COPD/resting_heart_rate"
+    plot_df[plot_df$gene_set_description=="Spherical_equivalent_(joint_analysis_main_effects_and_education_interaction)", 'gene_set_description']="Spherical_equivalent"
+    plot_df[plot_df$gene_set_description=="Normal_facial_asymmetry_(deformation_magnitude)", 'gene_set_description']="Normal_facial_asymmetry"
+    plot_df[plot_df$gene_set_description=="SARS-CoV-2: differential_RNA_expression", 'gene_set_description']="SARS-CoV-2: differential expression"
+    plot_df[plot_df$gene_set_description=="GWAS: Total bilirubin levels in HIV-1 infection", 'gene_set_description']="GWAS: Bilirubin levels in HIV-1 infection"
+    
+    ## Remove references
+    plot_df$gene_set_description=gsub(" \\(Klunk.*| \\(Rogers.*| \\(Deschamps.*| \\(Daub.*| \\(Ebel.*", 
+                                      "", plot_df$gene_set_description)
+    ## Replace "_" with space
+    plot_df$gene_set_description=gsub("_", " ", plot_df$gene_set_description)
+    ## Order datasets
+    #plot_df$Dataset=factor(plot_df$Dataset, levels=datasets)
+    # For fig0
+    plot_df[plot_df$gene_set_description=="Malaria", "gene_set_description"]="Malaria I"
+    plot_df[plot_df$gene_set_description=="Malaria (erythrocyte genes)", "gene_set_description"]="Malaria II"
+    plot_df[plot_df$gene_set_description=="Malaria (conserved genes)", "gene_set_description"]="Malaria III"
+    plot_df[plot_df$gene_set_description=="SARS-CoV-2: GWAS", "gene_set_description"]="SARS-CoV-2 (GWAS)"
+    ## Order genesets
+    gene_set_order=c("Breast", "Cervix", "Duodenum", "Oesophagus", "Lung", "Lymph node", "Soft tissue", "Urinary bladder",
+                     "Lung cancer in ever smokers", "COPD/resting heart rate", "Response to statin therapy", "Simvastatin-induced myopathy", 
+                     "Macular thickness", "Spherical equivalent", "Refractive errors",
+                     "Body mass index", "Normal facial asymmetry",
+                     "SARS-CoV-2: differential expression",
+                     "Immunity genes", "Innate immunity genes", 
+                     "SARS-CoV-2 (GWAS)", #"SARS-CoV-2: host-protein interaction",
+                     "Malaria I", "Malaria II", "Malaria III")
+    gene_set_order=rev(gene_set_order)
+    gene_set_order=gene_set_order[gene_set_order %in% unique(plot_df$gene_set_description)]
+    other_gene_sets=unique(plot_df$gene_set_description[!(plot_df$gene_set_description %in% gene_set_order)])
+    plot_df$gene_set_description=factor(plot_df$gene_set_description, levels=c(other_gene_sets[order(other_gene_sets)], gene_set_order))
+    
+    #####################################
+    ## Rename
+    plot_df$Direction=as.character(plot_df$Direction)
+    plot_df[plot_df$Direction=="Positive", "Direction"]="Forest candidates"
+    plot_df[plot_df$Direction=="Negative", "Direction"]="Savannah candidates"
+    
+    plot_df[plot_df$Subspecies=="all", "Subspecies"]="All"
+    plot_df[plot_df$Subspecies=="ce", "Subspecies"]="C-E"
+    plot_df[plot_df$Subspecies=="n", "Subspecies"]="N"
+    plot_df[plot_df$Subspecies=="w", "Subspecies"]="W"
+    
+    # Rename
+    plot_df[plot_df$Dataset=="gwas", "Dataset"]="GWAS"
+    plot_df[plot_df$Dataset=="pathogen_ebel2017", "Dataset"]="Pathogen-rel."
+    plot_df[plot_df$Dataset=="expr", "Dataset"]="Tissue expr."
+    plot_df[plot_df$Dataset=="phen", "Dataset"]="Phenotype"
+    plot_df[plot_df$Dataset=="imm", "Dataset"]="Immunity"
+    plot_df[plot_df$Dataset=="go", "Dataset"]="GO"
+    plot_df[plot_df$Dataset=="reac", "Dataset"]="Reactome"
+    plot_df[plot_df$Dataset=="vips", "Dataset"]="VIPs"
+    plot_df[plot_df$Dataset=="kegg", "Dataset"]="KEGG"
+    plot_df[plot_df$Dataset=="dehy", "Dataset"]=""
+    plot_df[plot_df$Category=="dehy", "Category"]="Dehydration\nresponse"
+    
+    
+    plot_df$gene_set=gsub("_", " ", plot_df$gene_set)
+    
+    plot_df[is.na(plot_df$observed_hits) | plot_df$observed_hits=="NA", 'observed_hits']=""
+    plot_df[is.na(plot_df$sig) | plot_df$sig=="NA", 'sig']=""
+    plot_df$observed_hits=paste0(plot_df$observed_hits, plot_df$sig)
+    
+    # Reorder
+    dataset_order=c('Phenotype', 'GWAS', "Immunity", "Pathogen\nresponse")
+    plot_df$Dataset=factor(plot_df$Dataset, levels=c(dataset_order, unique(plot_df$Dataset)[!(unique(plot_df$Dataset) %in% dataset_order)]))
+    plot_df=plot_df[plot_df$Direction %in% c("Savannah candidates", "Forest candidates"),]
+    plot_df$Direction=factor(plot_df$Direction, levels=c("Savannah candidates", "Forest candidates"))
+    plot_df=as.data.frame(plot_df)
+    
+    plot_df=plot_df[plot_df$gene_set_description!="GWAS: AIDS progression", ]
+    
+    main_plot=ggplot(plot_df, aes(x=Tail, y=gene_set_description, fill=fdr))+
+        theme_linedraw() +
+        theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), 
+              legend.title=element_text(size=7, hjust = 0.5), legend.text=element_text(size=7), 
+              axis.title.x = element_text(size=10),
+              axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size=6), axis.line = element_blank(), 
+              strip.text.y.left = element_text(angle = 0),
+              axis.text.y = element_text(size=6),
+              strip.background =element_rect(fill="white"), 
+              strip.text.x = element_text(colour = 'black', size=7), strip.text.y = element_text(colour = 'black', size=7),
+              panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+              panel.spacing = unit(0, "lines"), 
+              #legend.position = c(1.2, 1.11), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(6, 'mm')
+              #legend.position = c(1.3, 1.075), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(5, 'mm')
+              legend.position = c(1.25, 1.35), legend.box = "horizontal", legend.key.height= unit(1.75, 'mm'), legend.key.width= unit(4, 'mm')
+              #panel.spacing = unit(1, "lines")
+              ) +
+        labs(title=paste0(cov), x="", y="") +
+        geom_tile() +
+        geom_text(aes_string(label=cell_fill), position=position_nudge(y = nudge), size=cell_fill_size) +
+        # Add point to indicate significance of 0.1
+        geom_point(data=plot_df[!is.na(plot_df$fdr) & plot_df$fdr<0.1 & plot_df$fdr>0.05,], size=0.05) +
+        scale_fill_gradientn(name = "FDR", colors = rev(wes_palette("Zissou1", type = "continuous")), na.value = "white", limits = c(0,1), 
+                             guide = guide_colourbar(direction = "horizontal", title.position = "top"), breaks = c(0, 0.5,1)) +
+        scale_y_discrete(position = 'right') +
+        #facet_grid(Dataset~Subspecies, scales = "free", space='free')
+        facet_nested(Category+Dataset~Direction+Subspecies, scales = "free", space='free', switch = "y")
+    # Add gaps between major facets - needs to be specified manually
+    gt =  ggplotGrob(main_plot)
+    gt$widths[16] = unit(1, "lines")
+    gt$heights[13] = unit(1, "lines")
+    plot(gt)
+  }
+}
+
+# Write supplementary file
+#write.csv(total_gowinda, "output/gowinda_output/f_over_sum_known_trees/formatted_output/gea_gowinda_results.csv", row.names = FALSE)
+
+#total_gowinda[grepl("conserved", total_gowinda$gene_set),]
+#total_gowinda[total_gowinda$fpr<thresh & total_gowinda$observed_hits>min_n_genes, ]
+#total_gowinda[total_gowinda$Subspecies=='n'& total_gowinda$Dataset=='pathogen_ebel2017',]
+```
+
+#### Table
+
+```{r out.width=16, out.height=16}
+fdr_thresh=0.1
+
+table_df=plot_df[c("Direction", "Category", "Dataset", "Subspecies", "gene_set_description", "Tail", "observed_hits", "fdr")]
+table_df=table_df[order(table_df$Direction, table_df$Category, table_df$Dataset, table_df$Subspecies, table_df$gene_set_description, table_df$Tail, table_df$observed_hits, table_df$fdr), ]
+table_df=table_df[complete.cases(table_df),]
+table_df=table_df[table_df$fdr<fdr_thresh,]
+colnames(table_df)[colnames(table_df)=="observed_hits"]="Number of candidate genes"
+colnames(table_df)[colnames(table_df)=="gene_set_description"]="Gene set"
+colnames(table_df)[colnames(table_df)=="fdr"]="FDR"
+table_df$`Number of candidate genes`=gsub("\\*", "", table_df$`Number of candidate genes`)
+table_df$Subspecies=gsub("\\\n", "", table_df$Subspecies)
+table_df$Dataset=gsub("\\\n", " ", table_df$Dataset)
+table_df$FDR=round(table_df$FDR, digits=3)
+
+write.csv(table_df, paste0(gowinda_out_dir, "/",env_data,"/formatted_output/gea_gowinda_results.fdr_less_than_",fdr_thresh,".csv"), 
+          row.names = FALSE)
+```
+
+### Main Table
+
+#```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", fig.height=3.5, fig.width=7}
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", fig.height=2.6, fig.width=7}
+min_n_genes=2
+directions=c("Positive", "Negative")
+
+thresh_stat='fdr'
+
+for(thresh in 0.5){
+  freq_df=total_gowinda[total_gowinda$Direction %in% directions & total_gowinda[[thresh_stat]]<thresh & total_gowinda$observed_hits>=min_n_genes,]
+  
+  cat(thresh, 
+      "\n Forest",
+      "\n  N General gene sets: ", length(unique(freq_df[freq_df$Category=='General' & freq_df$Direction=='Positive', "gene_set_description"])),
+      "\n  N Pathogen gene sets: ", length(unique(freq_df[freq_df$Category=='Pathogens' & freq_df$Direction=='Positive', "gene_set_description"])),
+      "\n Savannah",
+      "\n N  General gene sets: ", length(unique(freq_df[freq_df$Category=='General' & freq_df$Direction=='Negative', "gene_set_description"])),
+      "\n N  Pathogen gene sets: ", length(unique(freq_df[freq_df$Category=='Pathogens' & freq_df$Direction=='Negative', "gene_set_description"])), "\n")
+
+  counts=ddply(freq_df, .(freq_df$Subspecies, freq_df$Tail, freq_df$Covariable, freq_df$Category, freq_df$Dataset, freq_df$Direction), nrow)
+  colnames(counts)=gsub('freq_df\\$', '', colnames(counts))
+  colnames(counts)=gsub('V1', 'Frequency', colnames(counts))
+  
+  # FDR products
+  #counts=aggregate(fdr ~ Subspecies+Covariable+Category+Dataset+Direction+Tail, data = total_gowinda, FUN = function(x) prod(x)) 
+  #colnames(counts)[colnames(counts)=='fdr']='Frequency'
+  # Add 0s
+  counts=merge(unique(total_gowinda[,c('Subspecies', 'Tail','Dataset', 'Category', 'Direction','Covariable')]),
+                    counts, all.x = T)
+  counts_comp=complete(counts[,c('Subspecies', 'Tail', 'Dataset','Covariable', 'Direction', 'Frequency')], 
+                             Subspecies, Tail, Covariable, Dataset, Direction)
+  counts_comp=merge(unique(total_gowinda[,c('Dataset', 'Category')]),
+                    counts_comp, all.x = T)
+  counts_comp[is.na(counts_comp$Frequency), 'Frequency']=0
+  
+  max_df=aggregate(Frequency ~ Dataset, data = counts_comp, FUN = max)
+  colnames(max_df)=c('Dataset', 'max')
+  counts_comp=merge(counts_comp, max_df, by='Dataset', all.x=T)
+  counts_comp$fill=counts_comp$Frequency/counts_comp$max
+  
+  # Format df
+  plot_df2=counts_comp
+  plot_df2=plot_df2[plot_df2$Dataset!="dehy",]
+  ## Rename
+  plot_df2$Direction=as.character(plot_df2$Direction)
+  plot_df2[plot_df2$Direction=="Positive", "Direction"]="Forest candidates"
+  plot_df2[plot_df2$Direction=="Negative", "Direction"]="Savannah candidates"
+  
+  plot_df2[plot_df2$Subspecies=="all", "Subspecies"]="All"
+  plot_df2[plot_df2$Subspecies=="ce", "Subspecies"]="C-E"
+  plot_df2[plot_df2$Subspecies=="w", "Subspecies"]="W"
+  
+  plot_df2[plot_df2$Dataset=="gwas", "Dataset"]="GWAS"
+  plot_df2[plot_df2$Dataset=="pathogen_ebel2017", "Dataset"]="Pathogen-rel."
+  plot_df2[plot_df2$Dataset=="expr", "Dataset"]="Tissue expr."
+  plot_df2[plot_df2$Dataset=="phen", "Dataset"]="Phenotype"
+  plot_df2[plot_df2$Dataset=="imm", "Dataset"]="Immunity"
+  plot_df2[plot_df2$Dataset=="go", "Dataset"]="GO"
+  plot_df2[plot_df2$Dataset=="reac", "Dataset"]="Reactome"
+  plot_df2[plot_df2$Dataset=="vips", "Dataset"]="VIPs"
+  plot_df2[plot_df2$Dataset=="kegg", "Dataset"]="KEGG"
+  plot_df2[plot_df2$Dataset=="dehy", "Dataset"]=""
+  plot_df2[plot_df2$Category=="dehy", "Category"]="Dehydration\nresponse"
+  
+  #plot_df2[is.na(plot_df2$observed_hits) | plot_df2$observed_hits=="NA", 'observed_hits']=""
+  #plot_df2[is.na(plot_df2$sig) | plot_df2$sig=="NA", 'sig']=""
+  #plot_df2$observed_hits=paste0(plot_df2$observed_hits, plot_df2$sig)
+  
+  # Reorder
+  #dataset_order=c('Phenotype', 'GWAS', "Immunity", "Pathogen\nresponse")
+  dataset_order=NA
+  plot_df2=plot_df2[order(plot_df2$Dataset),]
+  plot_df2$Dataset=factor(plot_df2$Dataset, levels=c(dataset_order, unique(plot_df2$Dataset)[!(unique(plot_df2$Dataset) %in% dataset_order)]))
+  plot_df2=plot_df2[plot_df2$Direction %in% c("Savannah candidates", "Forest candidates"),]
+  plot_df2$Direction=factor(plot_df2$Direction, levels=c("Savannah candidates", "Forest candidates"))
+    
+  # To align with plot above
+  #plot_df2$dummy=paste(rep(" ", max(nchar(as.vector(plot_df$gene_set_description)))), collapse = "")
+  plot_df2$dummy=as.vector(plot_df$gene_set_description)[which.max(nchar(as.vector(plot_df$gene_set_description)))]
+  plot_df2$blank=""
+  
+  # Replace 0's with blank?
+  plot_df2[plot_df2$Frequency==0, 'Frequency']=NA
+  ## Set size of text in cells
+  for(cell_fill in c('Frequency', 'blank')){
+    cell_fill_size=2.5
+    nudge=0
+    
+    for(cov in covs){
+      ## Trim the description so it isn't ridiculously long 
+      #plot_df2$gene_set_description=strtrim(plot_df2$gene_set_description, 50)
+      #####################################
+      ## Order datasets
+      #plot_df2$Dataset=factor(plot_df2$Dataset, levels=datasets)
+    
+      #####################################
+      main_plot=ggplot(plot_df2[plot_df2$Covariable==cov,], aes(x=Tail, y=dummy, fill=fill))+
+          theme_linedraw() +
+          theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), 
+                legend.title=element_text(size=10, hjust = 0.5), legend.text=element_text(size=7), 
+                axis.title.x = element_text(size=10),
+                axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size=6), axis.line = element_blank(), 
+                strip.text.y.left = element_text(angle = 0),
+                axis.text.y = element_text(size=6, colour = 'white'),
+                #axis.text.y=element_blank(), 
+                axis.ticks.y=element_blank(), 
+                strip.background =element_rect(fill="white"), 
+                strip.text.x = element_text(colour = 'black', size=7), strip.text.y = element_text(colour = 'black', size=7),
+                panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+                panel.spacing = unit(0, "lines"), 
+                #legend.position = c(1.2, 1.11), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(6, 'mm')
+                legend.position = c(-0.2, 2.8), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(5, 'mm')
+                ) +
+          labs(title="Genotype-Environment Association", x="Candidate FPR tails", y="") +
+          geom_tile() +
+          geom_text(aes_string(label=cell_fill), position=position_nudge(y = nudge), size=cell_fill_size) +
+          scale_fill_gradientn(name = "", colors = c("white", "red"), na.value = "white", 
+                                 #limits = c(0,1), 
+                                 guide = guide_colourbar(direction = "horizontal", title.position = "top"), breaks = c(0, 0.5,1)) +
+          #scale_fill_gradientn(name = "", colors = wes_palette("Zissou1", type = "continuous"), na.value = "white", 
+          #                       limits = c(0,1), 
+          #                       guide = guide_colourbar(direction = "horizontal", title.position = "top"), breaks = c(0, 0.5,1)) +
+          #scale_fill_gradientn(name = "", colors = "white", na.value = "white", limits = c(0,1), 
+          #                     guide = guide_colourbar(direction = "horizontal", title.position = "top"), breaks = c(0, 0.5,1)) +
+          scale_y_discrete(position = 'right') +
+          #facet_grid(Dataset~Subspecies, scales = "free", space='free')
+          facet_nested(Category+Dataset~Direction+Subspecies, scales = "free", space='free', switch = "y")
+      # Add gaps between major facets - needs to be specified manually
+      gt =  ggplotGrob(main_plot)
+      gt$widths[15] = unit(1, "lines")
+      #without dehy
+      gt$heights[30] = unit(1, "lines")
+      # with dehy
+      #gt$heights[29] = unit(1, "lines")
+      #gt$heights[42] = unit(1, "lines")
+      plot(gt)
+    }
+  }
+}
+
+
+# How you find the widths/heights corresponding to between major facets
+#library(grid)
+#i=30
+#gt =  ggplotGrob(main_plot)
+#for(i in 1:length(gt$widths)){
+#  gt =  ggplotGrob(main_plot)
+#  gt$widths[i] = unit(1, "lines")
+#  plot(gt)
+#}
+```
+
+#### Dehydration plot
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", fig.height=1.7, fig.width=6.25}
+thresh=0
+min_n_genes=2
+always_plot_dataset=c("dehy")
+#always_plot_dataset=c("vips")
+#directions=c("Both", "Positive", "Negative")
+directions=c("Positive", "Negative")
+#cell_fill='observed_hits'
+cell_fill='sig'
+
+heat_dir_list=list()
+heat_subsp_list=list()
+ratio_dir_list=list()
+ratio_subsp_list=list()
+
+# Add NAs for missing combinations
+## Note that we have to use 'gene_set' rather than 'gene_set_description' as there appear to be a few cases where 'gene_set_description' is the same across dataset, for example I think malaria
+## I use complete to make every possible combination and fill in NAs then re add the categories 'Dataset', 'Category', and 'gene_set_description' for which it did not make sense to completely shuffle as not all combinations are possible (i.e. a gene set always belongs to the same category and dataset)
+total_gowinda_comp=merge(complete(total_gowinda[total_gowinda$No._candidate_genes_in_gene_set >= min_n_genes & total_gowinda$Subspecies %in% c('all', 'ce', 'w', 'c', 'e'),
+                                                c('Subspecies', 'Tail', 'Covariable', 'gene_set', 'Direction', 'fdr', 'observed_hits', 'No._genes_in_gene_set_and_annotation_and_snp', 'expected_hits')], 
+                                  Subspecies, Tail, Covariable, gene_set, Direction), 
+                    unique(total_gowinda[,c('Dataset', 'Category', 'gene_set_description', 'gene_set')]), 
+                    by='gene_set')
+
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.05, 'sig']='*'
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.01, 'sig']='**'
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.001, 'sig']='***'
+
+## Set size of text in cells
+if(cell_fill=='sig'){
+  cell_fill_size=4
+  nudge=-0.33
+}else{
+  cell_fill_size=2.5
+  nudge=0
+  }
+
+for(cov in covs){
+  gene_sets=unique(total_gowinda_comp[total_gowinda_comp$Direction %in% directions & total_gowinda_comp$fdr<thresh,]$gene_set)
+  plot_df=total_gowinda_comp[total_gowinda_comp$Covariable==cov & total_gowinda_comp$gene_set %in% gene_sets | total_gowinda_comp$Dataset %in% always_plot_dataset,]
+  ## Trim the description so it isn't ridiculously long 
+  #plot_df$gene_set_description=strtrim(plot_df$gene_set_description, 50)
+  #####################################
+  
+  # Rename
+  plot_df[plot_df$gene_set_description=="Chronic_obstructive_pulmonary_disease_or_resting_heart_rate_(pleiotropy)", 'gene_set_description']="COPD/resting_heart_rate"
+  plot_df[plot_df$gene_set_description=="Spherical_equivalent_(joint_analysis_main_effects_and_education_interaction)", 'gene_set_description']="Spherical_equivalent"
+  plot_df[plot_df$gene_set_description=="Normal_facial_asymmetry_(deformation_magnitude)", 'gene_set_description']="Normal_facial_asymmetry"
+  plot_df[plot_df$gene_set_description=="SARS-CoV-2: differential_RNA_expression", 'gene_set_description']="SARS-CoV-2: differential expression"
+  plot_df[plot_df$gene_set_description=="GWAS: Total bilirubin levels in HIV-1 infection", 'gene_set_description']="GWAS: Bilirubin levels in HIV-1 infection"
+  
+  ## Remove references
+  plot_df$gene_set_description=gsub(" \\(Klunk.*| \\(Rogers.*| \\(Deschamps.*| \\(Daub.*| \\(Ebel.*", 
+                                    "", plot_df$gene_set_description)
+  ## Replace "_" with space
+  plot_df$gene_set_description=gsub("_", " ", plot_df$gene_set_description)
+  ## Order datasets
+  #plot_df$Dataset=factor(plot_df$Dataset, levels=datasets)
+  ## Order genesets
+  gene_set_order=c("Breast", "Cervix", "Duodenum", "Oesophagus", "Lung", "Lymph node", "Soft tissue", "Urinary bladder",
+                   "Lung cancer in ever smokers", "COPD/resting heart rate", "Response to statin therapy", "Simvastatin-induced myopathy", 
+                   "Macular thickness", "Spherical equivalent", "Refractive errors",
+                   "Body mass index", "Normal facial asymmetry",
+                   "SARS-CoV-2: differential expression", "GWAS: AIDS progression",
+                   "Immunity genes", "Innate immunity genes", 
+                   "Malaria", "Malaria (erythrocyte genes)")
+  gene_set_order=rev(gene_set_order)
+  gene_set_order=gene_set_order[gene_set_order %in% unique(plot_df$gene_set_description)]
+  other_gene_sets=unique(plot_df$gene_set_description[!(plot_df$gene_set_description %in% gene_set_order)])
+  plot_df$gene_set_description=factor(plot_df$gene_set_description, levels=c(other_gene_sets[order(other_gene_sets)], gene_set_order))
+  
+  #####################################
+  ## Rename
+  plot_df$Direction=as.character(plot_df$Direction)
+  plot_df[plot_df$Direction=="Positive", "Direction"]="Forest candidates"
+  plot_df[plot_df$Direction=="Negative", "Direction"]="Savannah candidates"
+  
+  plot_df[plot_df$Subspecies=="all", "Subspecies"]="All"
+  plot_df[plot_df$Subspecies=="ce", "Subspecies"]="C-E"
+  plot_df[plot_df$Subspecies=="w", "Subspecies"]="W"
+  
+  plot_df[plot_df$Dataset=="gwas", "Dataset"]="GWAS"
+  plot_df[plot_df$Dataset=="pathogen_ebel2017", "Dataset"]="Pathogen-rel."
+  plot_df[plot_df$Dataset=="expr", "Dataset"]="Tissue expr."
+  plot_df[plot_df$Dataset=="phen", "Dataset"]="Phenotype"
+  plot_df[plot_df$Dataset=="imm", "Dataset"]="Immunity"
+  plot_df[plot_df$Dataset=="go", "Dataset"]="GO"
+  plot_df[plot_df$Dataset=="reac", "Dataset"]="Reactome"
+  plot_df[plot_df$Dataset=="vips", "Dataset"]="VIPs"
+  plot_df[plot_df$Dataset=="kegg", "Dataset"]="KEGG"
+  plot_df[plot_df$Dataset=="dehy", "Dataset"]=""
+  plot_df[plot_df$Category=="dehy", "Category"]="Dehydration\nresponse"
+  
+  plot_df$gene_set=gsub("_", " ", plot_df$gene_set)
+  
+  plot_df[is.na(plot_df$observed_hits) | plot_df$observed_hits=="NA", 'observed_hits']=""
+  plot_df[is.na(plot_df$sig) | plot_df$sig=="NA", 'sig']=""
+  plot_df$observed_hits=paste0(plot_df$observed_hits, plot_df$sig)
+  
+  # Reorder
+  dataset_order=c('Phenotype', 'GWAS', "Immunity", "Pathogen\nresponse")
+  plot_df$Dataset=factor(plot_df$Dataset, levels=c(dataset_order, unique(plot_df$Dataset)[!(unique(plot_df$Dataset) %in% dataset_order)]))
+  plot_df=plot_df[plot_df$Direction %in% c("Savannah candidates", "Forest candidates"),]
+  plot_df$Direction=factor(plot_df$Direction, levels=c("Savannah candidates", "Forest candidates"))
+  
+  main_plot=ggplot(plot_df, aes(x=Tail, y=gene_set_description, fill=fdr))+
+      theme_linedraw() +
+      theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), 
+            legend.title=element_text(size=7, hjust = 0.5), legend.text=element_text(size=7), 
+            axis.title.x = element_text(size=10),
+            axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size=6), axis.line = element_blank(), 
+            strip.text.y.left = element_text(angle = 0),
+            axis.text.y = element_text(size=6),
+            strip.background =element_rect(fill="white"), 
+            strip.text.x = element_text(colour = 'black', size=7), strip.text.y = element_text(colour = 'black', size=7),
+            panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+            panel.spacing = unit(0, "lines"), 
+            #legend.position = c(1.2, 1.11), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(6, 'mm')
+            #legend.position = c(-0.2, 2.8), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(5, 'mm')
+            legend.position = c(1.2, 1.5), legend.box = "horizontal", legend.key.height= unit(1.75, 'mm'), legend.key.width= unit(4, 'mm')
+            ) +
+      labs(title="Genotype-Environment Association", x="Candidate FPR tails", y="") +
+      geom_tile() +
+      geom_text(aes_string(label=cell_fill), position=position_nudge(y = nudge), size=cell_fill_size) +
+      scale_fill_gradientn(name = "FDR", colors = rev(wes_palette("Zissou1", type = "continuous")), na.value = "white", limits = c(0,1), 
+                           guide = guide_colourbar(direction = "horizontal", title.position = "top"), breaks = c(0, 0.5,1)) +
+      scale_y_discrete(position = 'right') +
+      #facet_grid(Dataset~Subspecies, scales = "free", space='free')
+      facet_nested(Category+Dataset~Direction+Subspecies, scales = "free", space='free', switch = "y")
+  gt =  ggplotGrob(main_plot)
+  gt$widths[15] = unit(1, "lines")
+  plot(gt)
+}
+
+```
+
+
+#### Just NC
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", fig.height=2.25, fig.width=5.5, eval=FALSE}
+min_n_genes=2
+always_plot_dataset=c("")
+#always_plot_dataset=c("pathogen_ebel2017", "imm")
+#always_plot_dataset=c("vips")
+#directions=c("Both", "Positive", "Negative")
+directions=c("Positive", "Negative")
+#cell_fill='observed_hits'
+cell_fill='sig'
+
+heat_dir_list=list()
+heat_subsp_list=list()
+ratio_dir_list=list()
+ratio_subsp_list=list()
+
+# Add NAs for missing combinations
+## Note that we have to use 'gene_set' rather than 'gene_set_description' as there appear to be a few cases where 'gene_set_description' is the same across dataset, for example I think malaria
+## I use complete to make every possible combination and fill in NAs then re add the categories 'Dataset', 'Category', and 'gene_set_description' for which it did not make sense to completely shuffle as not all combinations are possible (i.e. a gene set always belongs to the same category and dataset)
+total_gowinda_comp=merge(complete(total_gowinda[total_gowinda$No._candidate_genes_in_gene_set >= min_n_genes & total_gowinda$Subspecies=='n',
+                                                c('Subspecies', 'Tail', 'Covariable', 'gene_set', 'Direction', 'fdr', 'observed_hits', 'No._genes_in_gene_set_and_annotation_and_snp', 'expected_hits')], 
+                                  Subspecies, Tail, Covariable, gene_set, Direction), 
+                    unique(total_gowinda[,c('Dataset', 'Category', 'gene_set_description', 'gene_set')]), 
+                    by='gene_set')
+#total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.1, 'sig']=".\n" #·
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.05, 'sig']='*'
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.01, 'sig']='**'
+total_gowinda_comp[!is.na(total_gowinda_comp$fdr) & total_gowinda_comp$fdr<0.001, 'sig']='***'
+
+## Set size of text in cells
+if(cell_fill=='sig'){
+  cell_fill_size=4
+  nudge=-0.33
+}else{
+  cell_fill_size=2.5
+  nudge=0
+  }
+
+for(thresh in 0.1){
+  cat(thresh, "\n")
+  for(cov in covs){
+    gene_sets=unique(total_gowinda_comp[total_gowinda_comp$Direction %in% directions & total_gowinda_comp$fdr<thresh,]$gene_set)
+    plot_df=total_gowinda_comp[total_gowinda_comp$Covariable==cov & total_gowinda_comp$gene_set %in% gene_sets | total_gowinda_comp$Dataset %in% always_plot_dataset,]
+    
+    ## Trim the description so it isn't ridiculously long 
+    #plot_df$gene_set_description=strtrim(plot_df$gene_set_description, 50)
+    #####################################
+  
+    plot_df[plot_df$gene_set_description=="Chronic_obstructive_pulmonary_disease_or_resting_heart_rate_(pleiotropy)", 'gene_set_description']="COPD/resting_heart_rate"
+    plot_df[plot_df$gene_set_description=="Spherical_equivalent_(joint_analysis_main_effects_and_education_interaction)", 'gene_set_description']="Spherical_equivalent"
+    plot_df[plot_df$gene_set_description=="Normal_facial_asymmetry_(deformation_magnitude)", 'gene_set_description']="Normal_facial_asymmetry"
+    plot_df[plot_df$gene_set_description=="SARS-CoV-2: differential_RNA_expression", 'gene_set_description']="SARS-CoV-2: differential expression"
+    plot_df[plot_df$gene_set_description=="GWAS: Total bilirubin levels in HIV-1 infection", 'gene_set_description']="GWAS: Bilirubin levels in HIV-1 infection"
+    
+    ## Remove references
+    plot_df$gene_set_description=gsub(" \\(Klunk.*| \\(Rogers.*| \\(Deschamps.*| \\(Daub.*| \\(Ebel.*", 
+                                      "", plot_df$gene_set_description)
+    ## Replace "_" with space
+    plot_df$gene_set_description=gsub("_", " ", plot_df$gene_set_description)
+    ## Order datasets
+    #plot_df$Dataset=factor(plot_df$Dataset, levels=datasets)
+    
+    #####################################
+    ## Rename
+    plot_df$Direction=as.character(plot_df$Direction)
+    plot_df[plot_df$Direction=="Positive", "Direction"]='"Forest candidates"'
+    plot_df[plot_df$Direction=="Negative", "Direction"]='"Savannah candidates"'
+    
+    plot_df[plot_df$Subspecies=="all", "Subspecies"]="All"
+    plot_df[plot_df$Subspecies=="ce", "Subspecies"]="C-E"
+    plot_df[plot_df$Subspecies=="n", "Subspecies"]="N-C"
+    plot_df[plot_df$Subspecies=="w", "Subspecies"]="W"
+    
+    # Rename
+    plot_df[plot_df$Dataset=="gwas", "Dataset"]="GWAS"
+    plot_df[plot_df$Dataset=="pathogen_ebel2017", "Dataset"]="Pathogen-rel."
+    plot_df[plot_df$Dataset=="expr", "Dataset"]="Tissue expr."
+    plot_df[plot_df$Dataset=="phen", "Dataset"]="Phenotype"
+    plot_df[plot_df$Dataset=="imm", "Dataset"]="Immunity"
+    plot_df[plot_df$Dataset=="go", "Dataset"]="GO"
+    plot_df[plot_df$Dataset=="reac", "Dataset"]="Reactome"
+    plot_df[plot_df$Dataset=="vips", "Dataset"]="VIPs"
+    plot_df[plot_df$Dataset=="kegg", "Dataset"]="KEGG"
+    plot_df[plot_df$Dataset=="dehy", "Dataset"]=""
+    plot_df[plot_df$Category=="dehy", "Category"]="Dehydration\nresponse"
+    
+    plot_df$gene_set=gsub("_", " ", plot_df$gene_set)
+    
+    plot_df[is.na(plot_df$observed_hits) | plot_df$observed_hits=="NA", 'observed_hits']=""
+    plot_df[is.na(plot_df$sig) | plot_df$sig=="NA", 'sig']=""
+    plot_df$observed_hits=paste0(plot_df$observed_hits, plot_df$sig)
+    
+    # Reorder
+    dataset_order=c('Phenotype', 'GWAS', "Immunity", "Pathogen\nresponse")
+    plot_df$Dataset=factor(plot_df$Dataset, levels=c(dataset_order, unique(plot_df$Dataset)[!(unique(plot_df$Dataset) %in% dataset_order)]))
+    plot_df=plot_df[plot_df$Direction %in% c('"Savannah candidates"', '"Forest candidates"'),]
+    plot_df$Direction=factor(plot_df$Direction, levels=c('"Savannah candidates"', '"Forest candidates"'))
+    plot_df=as.data.frame(plot_df)
+    
+    main_plot=ggplot(plot_df, aes(x=Tail, y=gene_set_description, fill=fdr))+
+        theme_linedraw() +
+        theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), 
+              legend.title=element_text(size=7, hjust = 0.5), legend.text=element_text(size=7), 
+              axis.title.x = element_text(size=10),
+              axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size=6), axis.line = element_blank(), 
+              strip.text.y.left = element_text(angle = 0),
+              axis.text.y = element_text(size=6),
+              strip.background =element_rect(fill="white"), 
+              strip.text.x = element_text(colour = 'black', size=7), strip.text.y = element_text(colour = 'black', size=7),
+              panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+              panel.spacing = unit(0, "lines"), 
+              #legend.position = c(1.2, 1.11), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(6, 'mm')
+              #legend.position = c(1.3, 1.075), legend.box = "horizontal", legend.key.height= unit(2.5, 'mm'), legend.key.width= unit(5, 'mm')
+              legend.position = c(1.2, 1.3), legend.box = "horizontal", legend.key.height= unit(1.75, 'mm'), legend.key.width= unit(4, 'mm')
+              #panel.spacing = unit(1, "lines")
+              ) +
+        labs(title=paste0(cov), x="Candidate FPR tails", y="") +
+        geom_tile() +
+        geom_text(aes_string(label=cell_fill), position=position_nudge(y = nudge), size=cell_fill_size) +
+        # Add point to indicate significance of 0.1
+        geom_point(data=plot_df[!is.na(plot_df$fdr) & plot_df$fdr<0.1 & plot_df$fdr>0.05,], size=0.05) +
+        scale_fill_gradientn(name = "FDR", colors = rev(wes_palette("Zissou1", type = "continuous")), na.value = "white", limits = c(0,1), 
+                             guide = guide_colourbar(direction = "horizontal", title.position = "top"), breaks = c(0, 0.5,1)) +
+        scale_y_discrete(position = 'right') +
+        #facet_grid(Dataset~Subspecies, scales = "free", space='free')
+        facet_nested(Category+Dataset~Direction+Subspecies, scales = "free", space='free', switch = "y")
+    # Add gaps between major facets - needs to be specified manually
+    gt =  ggplotGrob(main_plot)
+    gt$widths[7] = unit(1, "lines")
+    gt$heights[13] = unit(1, "lines")
+    gt$heights[10] = unit(1, "lines")
+    plot(gt)
+  }
+}
+```
+

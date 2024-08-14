@@ -1,0 +1,134 @@
+---
+title: "Plot Exome and chr21 Fst"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+The purpose of this script is to calculate the Fst matrix between all populations using allele frequencies. This is a work in progress.
+
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/allele_frequencies/') 
+```
+
+#### Library
+```{r library, message=FALSE, warning=FALSE}
+library(data.table)
+options(datatable.fread.datatable=FALSE)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+library(hierfstat)
+library(ape)
+
+source("scripts/allele_frequency_tools.R")
+exome_out_dir="exome/output/"
+chr21_out_dir="chr21/output/"
+
+subsps=c('all', 'ce', 'w')
+```
+
+```{r echo=FALSE}
+ac=list()
+daf=list()
+for(subsp in subsps){
+  if(subsp=='all'){subsp.file=''}else{subsp.file=paste0(".", subsp)}
+  for(miss.pop in c('0')){
+    if(miss.pop=='0'){miss.pop2='0.0'}else{miss.pop2=miss.pop}
+    if(!(subsp=='n' & miss.pop=='0.3')){
+  
+    # AC 
+    ac.exome=fread(paste0(exome_out_dir, "/f5", subsp.file ,".pops_minInd.6or50pct_missing.pops.", miss.pop,"/f5", 
+                                               subsp.file ,".pops.all.chrs_missing.pops.", miss.pop,"_pop.allele.counts_minMAC2"), header=T)
+    
+    rownames(ac.exome)=paste(gsub("chr", "", ac.exome$chr), ac.exome$pos, sep="_")
+    dac=as.matrix(ac.exome[, grepl(".dac$", names(ac.exome))])
+    aac=as.matrix(ac.exome[, grepl(".aac$", names(ac.exome))])
+    daf[['exome']][[subsp]][[miss.pop]]=as.data.frame(dac/(dac+aac))
+    daf[['exome']][[subsp]][[miss.pop]][daf[['exome']][[subsp]][[miss.pop]]=='NaN']=NA
+    
+    ac.chr21=fread(paste0(chr21_out_dir, "/chr21.f7", 
+                                                        subsp.file, ".pops_minInd.6or50pct_missing.pops.",miss.pop,
+                                                        "/chr21.f7", subsp.file, ".pops_chr21_missing.pops.",miss.pop2,"_pop.allele.counts_minMAC2.non-genic_1000bp.flanks"), header=T)
+    rownames(ac.chr21)=paste(gsub("chr", "", ac.chr21$chr), ac.chr21$pos, sep="_")
+    dac=as.matrix(ac.chr21[, grepl(".dac$", names(ac.chr21))])
+    aac=as.matrix(ac.chr21[, grepl(".aac$", names(ac.chr21))])
+    daf[['chr21']][[subsp]][[miss.pop]]=as.data.frame(dac/(dac+aac))
+    daf[['chr21']][[subsp]][[miss.pop]][daf[['chr21']][[subsp]][[miss.pop]]=='NaN']=NA
+    }
+  }
+}
+
+subsp_names=list(
+  'all'='All Subspecies',
+  'ce'='Central-Eastern',
+  'c'='Central',
+  'e'='Eastern',
+  'n'='Nigeria-Cameroon',
+  'w'='Western')
+```
+
+```{r}
+# Improved function to compute pairwise Fst values
+calculate_pairwise_fst <- function(freq_matrix) {
+  num_pops <- nrow(freq_matrix)
+  num_loci <- ncol(freq_matrix)
+  fst_matrix <- matrix(0, nrow = num_pops, ncol = num_pops)
+  
+  for (i in 1:(num_pops-1)) {
+    for (j in (i+1):num_pops) {
+      H_T <- mean((freq_matrix[i, ] - freq_matrix[j, ])^2)
+      H_S <- mean(freq_matrix[i, ] * (1 - freq_matrix[i, ]) + freq_matrix[j, ] * (1 - freq_matrix[j, ]))
+      Fst <- H_T / (H_T + 2 * H_S)
+      fst_matrix[i, j] <- Fst
+      fst_matrix[j, i] <- Fst
+    }
+  }
+  
+  colnames(fst_matrix)=rownames(freq_matrix)
+  rownames(fst_matrix)=rownames(freq_matrix)
+  
+  diag(fst_matrix) <- 0
+  return(fst_matrix)
+}
+
+# Ensure no population is excluded due to downsampling
+max_n <- 1000
+for (subsp in subsps) {
+  if (nrow(daf[['exome']][[subsp]][['0']]) > max_n) {
+    daf.tmp <- daf[['exome']][[subsp]][['0']][sample(nrow(daf[['exome']][[subsp]][['0']]), max_n), ]
+  } else {
+    daf.tmp <- daf[['exome']][[subsp]][['0']]
+  }
+
+  # Ensure proper transformation and transpose
+  fst_matrix <- calculate_pairwise_fst(as.matrix(t(daf.tmp)))
+  distance_matrix <- 1 - fst_matrix
+
+  # Convert distance matrix to a distance object
+  dist_obj <- as.dist(distance_matrix)
+
+  # Construct the tree using the neighbour-joining method
+  tree <- nj(dist_obj)
+
+  # Plot the tree
+  plot(tree, main = paste("Fst Tree for", subsp))
+}
+```
+
+
+https://rdrr.io/cran/polysat/man/calcFst.html
+
+```{r}
+#install.packages("polysat")
+library(polysat)
+freq_matrix=as.matrix(t(daf.tmp))
+freq_matrix=cbind(freq_matrix, Genomes=rep(10, nrow(freq_matrix)))
+calcPopDiff(freq_matrix, metric="Fst", pops = row.names(freq_matrix), 
+            loci = unique(gsub("\\..*$", "", names(freq_matrix))), global = FALSE,
+            bootstrap = FALSE, n.bootstraps = 1000, object = NULL)
+```

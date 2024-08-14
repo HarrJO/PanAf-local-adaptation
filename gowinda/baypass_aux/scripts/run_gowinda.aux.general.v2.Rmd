@@ -1,0 +1,464 @@
+---
+title: "Run Gowinda: AUX"
+author: "Harrison Ostridge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+This script runs GOWINDA on candidates identified using the AUX model in BayPass.
+
+`~/OneDrive - University College London/Projects/Ostridge_PanAf/gowinda/baypass_core/scripts/run_gowinda.Rmd` must be run first as this generates annotation, gene set and background SNP files. BayPass results are scp over from myriad and formated (including adding genome positions) using `/Users/harrisonostridge/OneDrive - University College London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_aux/scripts/format_baypass_aux_output.ipynb`. Candidates are then selected and candidate SNP files made using scripts in `/Users/harrisonostridge/OneDrive - University College London/Projects/Ostridge_PanAf/baypass/analysing_baypass_output/baypass_aux/scripts/`.
+
+# Gowinda
+
+## Parameter options
+
+From https://code.google.com/archive/p/gowinda/wikis/Manual.wiki:
+
+--annotation-file: a file containing the annotation for the species of interest. Only the .gtf format is accepted (see above). Mandatory parameter
+
+--gene-set-file: a file containing for every gene set (e.g.: Gene Ontology term) the associated genes; Mandatory parameter
+
+--snp-file: a file containing the total set of SNPs that were used for the GWAS. For the file format see above; Mandatory parameter
+
+  Tab delimited file with two columns; chromosome and position
+  
+--candidate-snp-file: a file containing the candidate SNPs that show some association with the trait of interest. For the file format see above; Mandatory parameter
+
+  Tab delimited file with two columns; chromosome and position
+  
+--output-file: where to store the output. Mandatory parameter
+
+--mode: As a major feature Gowinda offers two main analysis modes either snp or gene; Optional parameter; default=gene
+
+  Analysis mode gene: Multiple SNPs in a gene mean the gene is counted only once. Genes are treated as haplotype blocks.
+  
+    Based on the assumption that all SNPs within a gene are completely linked
+  
+  Analysis mode SNP: Multiple SNPs in a gene mean the gene is counted multiple times.
+  
+    Based on the extreme assumption that all SNPs are independent, i.e.: in linkage equilibrium
+
+--gene-definition: As another major feature Gowinda allows to adjust the SNP to gene mapping, i.e.: to decide which genes are associated with a given SNP. Mandatory parameter
+
+  exon: SNPs within exons are associated with genes
+  
+  cds: SNPs within CDS are associated with genes
+   
+  utr: SNPs within 5'-UTR and 3'-UTR are associated with genes. Calculated as exon - cds
+
+  gene: SNPs within exons or introns are associated with genes. Internally the distance from the start position of the first exon to the end position of the last exon is computed
+  
+  upstreamDDDD: in addition to exons and introns also the DDDD bases upstream the start of a gene are considered for mapping a SNP to a gene. DDDD must be replaced with an arbitrary number. This method requires the strand information.
+  
+  downstreamDDDD: in addition to exons and introns also the DDDD bases downstream of the end of the gene are considered for mapping a SNP to a gene. DDDD must be replaced with an arbitrary number. This method requires the strand information.
+  
+  updownstreamDDDD: in addition to exons and introns also the DDDD bases upstream the start of a gene and the DDDD bases downstream of the end of a gene are considered for mapping a SNP to a gene. DDDD must be replaced with an arbitrary number. This method does NOT require strand information.
+
+--simulations: the number of simulations that should be performed. For more information on the number of simulation see below
+
+  More simulations -> more accuracy -> lower possible p value. NB: more simulations does not result in more enriched categories.
+
+--min-genes: filter for GO categories having at least --min-genes number of genes; This parameter is for example useful to remove small GO categories having only one associated gene; Optional parameter; default=1
+
+--min-significance: only report GO categories having after FDR correction p-value <= --min-significance; Optional parameter; default=1.0
+
+--detailed-log: switch to the detailed log mode. The IDs of genes present in the GO association file but not present in the annotation will be displayed. Also the progress of the simulations will be shown in steps of 10.000; Optional parameter
+
+--threads: the simulations of Gowinda utilize multi-threading. Adjust the number of threads to use. Optional parameter; default=1
+
+--help: show the help for Gowinda; Optional parameter
+
+### Parameter decisions
+
+#### --mode gene
+
+Mode SNPs relies on the very incorrect assumption of linkage equilibrium. Mode gene is also consitant with Harvi's and Josh's papers.
+
+#### --gene-definition updownstream5000
+
+Although we expect sites to not be more than the length of a read (150bp) away from an exon as we are only using on target reads, the GTF from GFF has slightly different coordinates to the BED file defining the 'on target' regions and so I increase this to 5kb to account for this (as recommended by Aida) and to include the regulatory regions of a gene.
+
+#### --min-genes 3
+
+To be consistent with Josh's and Harvi's papers
+
+## Shell script
+
+I have made a shell script which takes command line arguments (they have to be single letters as I am using the built in getopts):
+
+Needs to be run from the directory `/Users/harrisonostridge/OneDrive\ -\ University\ College\ London/Projects/Ostridge_PanAf/gowinda/` i.e. run like this `./scripts/run_gowinda.sh`.
+
+#### `/Users/harrisonostridge/OneDrive - University College London/Projects/Ostridge_PanAf/gowinda/baypass_aux/scripts/run_gowinda.aux.sh`
+
+```{bash eval=FALSE}
+#!/bin/sh
+
+# Read in command line arguments
+while getopts ":b:c:g:a:o:" opt; do
+        case $opt in
+        b) BG_SNP="$OPTARG"
+        ;;
+        c) CAND_SNP="$OPTARG"
+        ;;
+        g) GENE_SET="$OPTARG"
+        ;;
+        a) ANNOTATION="$OPTARG"
+        ;;
+        o) OUTPUT="$OPTARG"
+        ;;
+        \?) echo "Invalid option -$OPTARG" >&2
+        ;;
+        esac
+done
+
+# Run gowinda
+## Remove log file if it already exists
+rm ${OUTPUT}_log.txt
+echo '### Background SNP file' ${BG_SNP} '\n' >${OUTPUT}_log.txt
+echo '### Candidate SNP file' ${CAND_SNP} '\n' >>${OUTPUT}_log.txt
+echo '### Gene set file ' ${GENESET} '\n' >>${OUTPUT}_log.txt
+echo '### Annotation file ' ${ANNOTATION} '\n' >>${OUTPUT}_log.txt
+echo '### Output file' ${OUTPUT} '\n' >>${OUTPUT}_log.txt
+## Run gowinda
+java -Xmx4g -jar bin/Gowinda-1.12.jar \
+--snp-file ${BG_SNP} \
+--candidate-snp-file ${CAND_SNP} \
+--gene-set-file ${GENE_SET} \
+--annotation-file ${ANNOTATION} \
+--simulations 100000 \
+--min-significance 1 \
+--gene-definition updownstream5000 \
+--threads 8 \
+--mode gene \
+--min-genes 3 \
+--output-file ${OUTPUT} 2>&1 | tee -a ${OUTPUT}_log.txt
+```
+
+## Run Gowinda
+
+**It is best to just copy and paste the chunks into the terminal.**
+
+### General datasets
+
+#### GO
+
+```{bash eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+          # Add output directory
+          mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+          # Run BayPass
+          baypass_aux/scripts/run_gowinda.aux.sh \
+          -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+          -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+          -g baypass_core/output/gowinda_input/association_files/association_gominer.txt \
+          -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_go.gtf \
+          -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.go
+        done
+       done
+      done
+    done
+  done
+```
+
+#### KEGG
+
+```{bash eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/KEGG.biosystems.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.kegg
+       done
+      done
+    done
+  done
+done
+```
+
+#### Reactome
+
+```{bash eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/REAC.biosystems.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.reac
+       done
+      done
+    done
+  done
+  done
+```
+
+#### GWAS
+
+```{bash eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.neg_beta' '.pos_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/gwas_association.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_gwas.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.gwas
+       done
+      done
+    done
+  done
+  done
+```
+
+#### Tissue expression
+
+```{bash eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/expr_association.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_expr.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.expr
+       done
+      done
+    done
+  done
+  done
+```
+
+##### Tissue expression - semi-unique
+
+```{bash eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/expr.5overlap_association.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_expr.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.expr.5overlap
+       done
+      done
+    done
+  done
+done
+```
+
+#### Phenotype database
+
+```{bash eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/phen_association.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_phen.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.phen
+       done
+      done
+    done
+  done
+  done
+```
+
+### Pathogen datasets
+
+#### VIPs
+
+```{bash  eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/mergedlthtvip.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.vips
+       done
+      done
+    done
+  done
+done
+```
+
+#### Hypothesis Driven Pathogens (including Ebel 2017 genes)
+
+```{bash eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/pathogen_ebel2017_association.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_pathogen_ebel2017.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.pathogen_ebel2017
+       done
+      done
+    done
+  done
+  done
+```
+
+#### Immunity Genes
+
+```{bash  eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/imm_association.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_imm.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.imm
+       done
+      done
+    done
+  done
+done
+```
+
+#### Dehydration
+
+```{bash eval=FALSE}
+for ENV_DATA in f_over_sum_known_trees
+  do
+  for SUBSP in c e
+    do
+    for DIR in '.pos_beta' '.neg_beta'
+      do
+      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
+        do
+        for COV in f_over_sum_known_trees
+          do
+        # Add output directory
+        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
+        # Run BayPass
+        baypass_aux/scripts/run_gowinda.aux.sh \
+        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
+        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
+        -g baypass_core/output/gowinda_input/association_files/dehy_association.gene.set_and.all.txt \
+        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_dehy.gtf \
+        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.dehy
+       done
+      done
+    done
+  done
+  done
+```
+

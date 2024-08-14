@@ -1,0 +1,775 @@
+---
+title: "Population Structure"
+author: "Harrison Ostridge"
+date: "29/04/2021"
+output: html_document
+---
+
+The purpose of this script is to plot the outputs of running PCAngsd and NGSadmix on the filtered exomes. This is used to verify that population structure agrees with previous studies and to define populations by combining closely related communities.
+
+#### Setup
+
+```{r setup}
+rm(list=ls())
+knitr::opts_knit$set(root.dir = '~/OneDrive - University College London/Projects/Ostridge_PanAf/population_structure/') 
+```
+
+#### Library
+
+```{r library, message=FALSE, warning=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(readxl)
+library(plyr)
+library(tidyr)
+library(stringr)
+library(igraph)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+library(fields)
+library(maps)
+library(mapdata)
+library(mapplots)
+library(RColorBrewer)
+library(MCMCpack)
+library(ggplotify)
+
+filtering_dir="../sample_filtering/exome/output/"
+output_dir="exome/output"
+pcangsd_output_dir="../pcangsd/exome/output/"
+ngsadmix_output_dir="../ngsadmix/exome/output/"
+```
+
+#### Read in data
+
+```{r}
+# Read in metadata
+f5_exome=read.csv(paste0(filtering_dir, "/f5/f5.metadata.csv"), check.names = FALSE)
+## Ensure it is in the correct order
+f5_exome=f5_exome[order(f5_exome$Sample),]
+```
+
+## Population Structure
+
+### PCAngsd
+
+```{r}
+plot.PCA=function(subsps, meta.data, input.dir, output.file=NULL, label=NULL, return.df=FALSE){
+  # Create list to store result data frames in
+  results=list()
+  # BAM file lists are always given in alphabetical order (with respect to sample name) so it is important to ensure the samples are in this order
+  meta.data=meta.data[order(meta.data$Sample),]
+  # Add label column, if no column is provided a blank label column is used
+  meta.data$label=''
+  if(!is.null(label)){meta.data$label=meta.data[[label]]}
+  # Loop over each subspecies provided
+  for(subsp in subsps){
+    title=""
+    meta.data.subsp=meta.data
+    # Subspecies options
+    if(subsp=="c"){title="Central"}
+    if(subsp=="e"){title="Eastern"}
+    if(subsp=="n"){title="Nigeria-Cameroon"}
+    if(subsp=="w"){title="Western"}
+    if(subsp=="all"){title="All Samples"
+      # Group defines how to draw polygons
+      group="Subspecies"
+      input=paste0(input.dir,"f5.0.5x.", subsp,".cov")}
+    if(subsp != "all"){
+      # Group defines how to draw polygons
+      group="Community"
+      input=paste0(input.dir, subsp,"/f5.0.5x.", subsp,".cov")
+      if(title!=""){meta.data.subsp=meta.data[meta.data$Subspecies==title,]}}
+    # Read in PCAngsd output
+    cov=read.table(input)
+    pcs=eigen(cov)
+    # Select columns corresponding to PC1 and PC2
+    pc1.pc2=as.data.frame(pcs$vectors[,1:2])
+    colnames(pc1.pc2)=c("f5.PC1", "f5.PC2")
+    # Add PC1 and PC2 columns to metadata
+    ## The order of samples in PCAngsd output should be alphabetical as the BAM file lists were written in this order
+    pc1.pc2=cbind(meta.data.subsp, pc1.pc2)
+    # Percentage variance explained by PCs
+    PC1.percent=pcs$values[1]/sum(pcs$values)*100
+    PC2.percent=pcs$values[2]/sum(pcs$values)*100
+    # Plot
+    PC1.lab=paste("PC1 (", round(PC1.percent,digits = 2),"%)")
+    PC2.lab=paste("PC2 (", round(PC2.percent,digits = 2),"%)")
+    find_hull=function(pc1.pc2) pc1.pc2[chull(pc1.pc2[,'f5.PC1'], pc1.pc2[,'f5.PC2']), ]
+    hulls=ddply(pc1.pc2, group, find_hull)
+    # Plot all samples
+    if(subsp=="all"){
+      plot=ggplot(pc1.pc2, aes(x=f5.PC1, y=f5.PC2, fill=Subspecies, colour=Subspecies, label = label)) +
+        theme_minimal()+ 
+        geom_point(aes(shape=Subspecies), size = 2) + 
+        geom_text_repel(size = 3, min.segment.length = unit(0.1, "lines"), show.legend = FALSE) +
+        geom_polygon(data = hulls, alpha = 0.5) + 
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+        guides(fill=guide_legend(ncol=1)) + 
+        labs(x=paste(PC1.lab), y=paste(PC2.lab)) + 
+        ggtitle(title) +
+        scale_fill_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+        scale_color_manual(values = c('green3', 'darkorange', 'red', 'blue')) +
+        scale_shape_manual(values=0:4)
+    }
+    # Plot individual subspecies
+    else{
+      plot=ggplot(pc1.pc2, aes(x=f5.PC1, y=f5.PC2, fill=Site, colour=Site, label = label)) +
+        theme_minimal()+ 
+        geom_point(aes(shape=Site), size = 2) + 
+        geom_text_repel(size = 3, min.segment.length = unit(0.1, "lines"), show.legend = FALSE) +
+        geom_polygon(data = hulls, alpha = 0.5) + 
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+        guides(fill=guide_legend(ncol=1), shape=guide_legend(ncol=1)) + 
+        labs(x=paste(PC1.lab), y=paste(PC2.lab)) + 
+        ggtitle(title) +
+        scale_shape_manual(values=rep(0:6, 10))
+    }
+    # If an output file is provided, write to it
+    if(!is.null(output.file)){ggsave(paste0(output.file), plot=plot)}
+    # Display plot
+    print(plot)
+    # Save metadata with PC1 and PC2 columns added for the subspecies in results list
+    results[[subsp]]=pc1.pc2
+  }
+  # If return.df is set to TRUE, return the results list
+  if(return.df==T){return(results)}
+}
+```
+
+```{r message=FALSE, warning=FALSE, out.width="50%"}
+exome_pc1.hc.c.rel_pcs.subsp=plot.PCA("all", 
+         f5_exome,
+         paste0(pcangsd_output_dir, "/f5.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"))
+```
+
+```{r  message=FALSE, warning=FALSE, out.width="50%"}
+exome_pc1.hc.c.rel_pcs.subsp=plot.PCA(c("c", "e", "n", "w"), 
+         f5_exome,
+         paste0(pcangsd_output_dir, "/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"))
+```
+
+#### Alternative PCA method
+
+Rather than running ANGSD separably for each subspecies you can just select the relevant columns in the beagle file generated from running ANGSD on all subspecies together. Here I quickly try this method to check my decisions are robust to PCA method.
+
+```{r  message=FALSE, warning=FALSE, out.width="25%"}
+# Plot Additional concerning samples
+plot.PCA(c("c", "e", "n", "w"), 
+         f5_exome,
+         paste0(pcangsd_output_dir, "/f5.0.5x.subsp.from.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"))
+```
+
+The PCAs look broadly the same but patterns of population structure are less clear. They also look less similar to those made by Claudia with chr21 leading me to believe this is not the best method. This could be due to the fact that filters were applied to all samples together, particularly minInd which could mean that there are some sites here where there is data for no individuals or at least very few in a given subspecies.
+
+I would come to the same conclusions when it came to combining communities using either method so it is robust to the PCA method.
+
+## Procrustes transformation
+
+```{r out.width="50%"}
+plot.PCA.map=function(subsps, meta.data, input.dir, output.file=NULL, label=NULL, return.df=FALSE){
+  # Create list to store result data frames in
+  results=list()
+  # BAM file lists are always given in alphabetical order (with respect to sample name) so it is important to ensure the samples are in this order
+  meta.data=meta.data[order(meta.data$Sample),]
+  # Loop over each subspecies provided
+  for(subsp in subsps){
+    title=""
+    meta.data.subsp=meta.data
+    # Subspecies options
+    if(subsp=="c"){title="Central"}
+    if(subsp=="e"){title="Eastern"}
+    if(subsp=="n"){title="Nigeria-Cameroon"}
+    if(subsp=="w"){title="Western"}
+    if(subsp=="all"){title="All Samples"
+      # Group defines how to draw polygons
+      group="Subspecies"
+      input=paste0(input.dir,"f5.0.5x.", subsp,".cov")}
+    if(subsp != "all"){
+      # Group defines how to draw polygons
+      group="Community"
+      input=paste0(input.dir, subsp,"/f5.0.5x.", subsp,".cov")
+      if(title!=""){meta.data.subsp=meta.data[meta.data$Subspecies==title,]}}
+    # Read in PCAngsd output
+    cov=read.table(input)
+    pcs=eigen(cov)
+    # Procrustes transformation
+    pro=procrustes(pcs$vectors[,1:2], as.matrix(meta.data.subsp[, c("Longitude", "Latitude")]),translation=TRUE,dilation=TRUE)$X.new
+    colnames(pro)=c("trans.long", "trans.lat")
+    pro.meta.data=cbind(meta.data.subsp, pro)
+    # Hulls
+    find_hull=function(pro.meta.data) pro.meta.data[chull(pro.meta.data[,'trans.long'], pro.meta.data[,'trans.lat']), ]
+    hulls=ddply(pro.meta.data, group, find_hull)
+    # Limits
+    ## x
+    xmin=min(min(pro.meta.data$trans.long), min(pro.meta.data$Longitude))
+    xmax=max(max(pro.meta.data$trans.long), max(pro.meta.data$Longitude))
+    xmin=xmin-(xmax-xmin)*0.2
+    xmax=xmax+(xmax-xmin)*0.2
+    ## x
+    ymin=min(min(pro.meta.data$trans.lat), min(pro.meta.data$Latitude))
+    ymax=max(max(pro.meta.data$trans.lat), max(pro.meta.data$Latitude))
+    ymin=ymin-(ymax-ymin)*0.1
+    ymax=ymax+(ymax-ymin)*0.1
+    # Line connecting polygon centroids to geographic locations
+    centroids=aggregate(as.matrix(pro.meta.data[,c("trans.long", "trans.lat")]) ~ Site, data=pro.meta.data, FUN=mean)
+    colnames(centroids)=c("Site","cent.long", "cent.lat")
+    lines=merge(centroids, unique(pro.meta.data[,c("Site","Longitude", "Latitude")]))
+    # Plot
+    world_map=map_data("world")
+    plot=ggplot(data=pro.meta.data, aes(x=trans.long, y=trans.lat, fill=Site, colour=Site)) +
+      theme_minimal() +
+      geom_polygon(data=world_map, aes(x = long, y = lat, group = group), fill="grey93", colour = "darkgrey") +
+      coord_sf(xlim=c(xmin, xmax), ylim=c(ymin, ymax)) +
+      geom_point(aes(shape=Site), size = 1) + 
+      geom_point(aes(x=Longitude, y=Latitude, shape=Site), size = 4) + 
+      geom_polygon(data = hulls, alpha = 0.5) + 
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.key.size = unit(0.4, "cm"), plot.title = element_text(hjust = 0.5)) +
+      guides(fill=guide_legend(ncol=1), shape=guide_legend(ncol=1)) + 
+      geom_segment(data = lines, aes(x = Longitude, y = Latitude, xend = cent.long, yend = cent.lat, colour = Site))+
+      ggtitle(title) +
+      scale_shape_manual(values=rep(0:6, 10)) +
+      geom_text_repel(data=lines, aes(x=Longitude, y=Latitude, label=Site), 
+                        size = 3, segment.color="black", segment.linetype=1, segment.size=0.2, show.legend = FALSE, fontface = 'bold', colour="black") +
+      xlab("") + ylab("")
+    print(plot)
+  }
+}
+
+#plot.PCA.map(c("c", "e", "n", "w"), 
+#         f5_exome,
+#         paste0(pcangsd_output_dir, "/f5.0.5x.subsp.from.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"))
+plot.PCA.map(c("c", "e", "n", "w"), 
+         f5_exome,
+         paste0(pcangsd_output_dir, "/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/"))
+```
+
+### NGSadmix
+
+```{r}
+# Plotting function
+plot.NGSadmix=function(meta.data, max.logs, input.prefix, output.prefix=NULL, title=NULL, Ks=2:10, group="Site", order_by_anc=TRUE){
+  # This function plots the results from NGSadmix as stacked bar charts.
+  # Ensure samples are in the correct order (this is the order of the BAM file list input for ANGSD and therefore the order of input for NGAadmix)
+  meta.data=meta.data[order(meta.data$Sample),]
+  # Loop over K values
+  plots=list()
+  first_plot=TRUE
+  df.total=NULL
+  for(K in Ks){
+    # Select run with highest likelihood for this values of K
+    run=paste0(max.logs[max.logs$k==K, 'run'])
+    # Read in data for the run with the highest likelihood 
+    q=read.table(paste0(input.prefix, "_K", K, "_run", run, ".qopt"))
+    # I standardise the column names to 'group' rather than 'Site' or 'Subspecies' etc. so it is general
+    meta.data$Group=meta.data[,group]
+    # cbind samples and group to NGSadmix results
+    meta.data.q=cbind(meta.data, q)
+    # Change to long format
+    df=meta.data.q %>% pivot_longer(colnames(meta.data.q)[(1+ncol(meta.data.q)-K):ncol(meta.data.q)], names_to = "key", values_to = "value")
+    # Ordering individuals
+    ## Make empty df so each population can be dealt with separately and rbinded together at the end
+    df.all=data.frame()
+    max.keys=data.frame()
+    ## For each population, ensure that samples are ordered according to proportion of ancestry from the major ancestral population for the modern
+    for(pop in unlist(unique(df$Group))){
+      # Select rows corresponding to each population 
+      df.pop=df[df$Group==pop, ]
+      # Sum the proportions of each ancestral population
+      value.per.key=tapply(df.pop$value, df.pop$key, FUN=sum)
+      # Select the ancestral population that has contributed the most to the modern population
+      max.key=rownames(data.frame(which.max(value.per.key)))
+      # Calculate the proportion of ancestry this ancestral population contributed to modern population
+      max.key.prop=value.per.key[which.max(value.per.key)]/length(unique(df.pop$Sample))
+      max.keys=rbind(max.keys, cbind(pop, max.key, max.key.prop))
+      # Select rows corresponding to this ancestral population and order by proportion
+      df.pop.max.key=df.pop[df.pop$key==max.key, ]
+      df.pop.max.key=df.pop.max.key[order(df.pop.max.key$value),]
+      # Important to have leading 0s on the numbers or the ordering doesn't work
+      sample.order=data.frame(cbind(df.pop.max.key$Sample, paste0(sprintf('%0.3d', 1:length(df.pop.max.key$Sample)), pop)))
+      colnames(sample.order)=c("Sample", "order")
+      df.pop=merge(df.pop, sample.order, by="Sample", all.x=T)
+      df.all=rbind(df.all, df.pop)
+    }
+    # Ordering populations
+    if(order_by_anc){
+      df.all=merge(df.all, max.keys, by.x="Group", by.y="pop")
+      # Order by the main ancestral population then order populations by the proportion of ancestry contribution
+      max.keys=max.keys[order(max.keys$max.key, max.keys$max.key.prop),]
+      # Make group type factor so ggplot follows the ordering
+      df.all$Group=factor(df.all$Group,levels=unique(max.keys$pop))
+    }else{
+      df.all$Group=factor(df.all$Group, levels=unique(max.keys$pop)[order(unique(max.keys$pop))])
+    }
+    # Plot
+    Plot=ggplot(df.all, aes(as.factor(order), value, fill=key)) +
+      geom_col(position = "fill", width = 1) + 
+      facet_grid(.~Group, space="free", scales="free_x") + 
+      theme_minimal() + 
+      scale_y_continuous(expand = c(0, 0)) + 
+      scale_fill_manual(values = colorRampPalette(brewer.pal(K, "Set1"))(K)) + 
+      labs(x="", y="") +
+      scale_x_discrete(expand = c(0,0)) + 
+      theme(plot.title = element_text(hjust = 0.5), legend.position="none", axis.text.x = element_blank(), 
+            strip.text.x = element_text(angle=45, hjust=0.5, vjust=0.5), panel.background = element_rect(fill = NA, color=NA),
+            plot.margin = unit(c(1,3,1,1), "lines"))
+    if(group %in% c("Subspecies", "subspecies")){
+      Plot=Plot+
+        theme(strip.text.x = element_text(angle=45, hjust=0.5, vjust=0.5))
+    }
+    if(first_plot){
+      Plot=Plot+
+        labs(title=paste0(title))
+      first_plot=FALSE
+    }else{
+      Plot=Plot+
+        labs(title=" ")
+    }
+    ## In order to prevent the titles being cropped, I turn the plot into a Grob
+    ### I saved the grobs for each K in a list 
+    Plot <- ggplotGrob(Plot)
+    ### Select each element beginning with "strip-t" (indicating parameters related to titles at the top (hence "-t"))
+    for(i in which(grepl("strip-t", Plot$layout$name))){Plot$grobs[[i]]$layout$clip <- "off"}
+    # Save as pdf id the option is selected 
+    if(!is.null(output.prefix)){ggsave(paste0(output.prefix, "_K", K, ".pdf"), plot=Plot)}
+    # Display plot
+    #grid.arrange(Plot)
+    df.all$K=paste0("K=", K)
+    if(is.null(df.total)){
+      df.total=df.all
+    }else{
+      df.total=rbind(df.total, df.all)
+    }
+  }
+  #grid.draw(rbind(p1, p2, p3, size = "first")) 
+  #grid.arrange(grobs = plots, nrow=length(Ks), heights=c(4,3))
+  #do.call("grid.arrange", c(plots, ncol=1))
+  df.total$K=factor(df.total$K, levels=unique(df.total$K))
+  big.plot=ggplot(df.total, aes(as.factor(order), value, fill=key)) +
+      geom_col(position = "fill", width = 1) + 
+      facet_grid(K~Group, space="free", scales="free_x") + 
+      theme_void() + 
+      scale_y_continuous(expand = c(0, 0)) + 
+      scale_fill_manual(values = colorRampPalette(brewer.pal(K, "Set1"))(K)) + 
+      labs(title=title, x="", y="") +
+      scale_x_discrete(expand = c(0,0)) + 
+      theme(plot.title = element_text(hjust = 0.5), legend.position="none", axis.text.x = element_blank(), 
+            strip.text.x = element_text(angle=90), panel.background = element_rect(fill = NA, color=NA),
+            plot.margin = unit(c(1,3,1,1), "lines"),
+            strip.clip = "off")
+  print(big.plot)
+}
+```
+
+
+```{r}
+plot.NGSadmix.map=function(meta.data, max.logs, input.prefix, subsp='all', output.prefix=NULL, Ks=2:10, group="Site"){
+  # This function plots the results from NGSadmix as stacked bar charts.
+  # Ensure samples are in the correct order (this is the order of the BAM file list input for ANGSD and therefore the order of input for NGAadmix)
+  meta.data=meta.data[order(meta.data$Sample),]
+  # Subspecies specific parameters
+    if(subsp=="c"){
+      title <- "Central"
+      xlim=c(8,18)
+      ylim=c(-5,5)
+      radius=0.75}
+    if(subsp=="e"){
+      title <- "Eastern"
+      xlim=c(20,36)
+      ylim=c(-7,8)
+      radius=0.75}
+    if(subsp=="n"){
+      title <- "Nigeria-Cameroon"
+      xlim=c(6,15)
+      ylim=c(3,9)
+      radius=0.5}
+    if(subsp=="w"){
+      title <- "Western"
+      xlim=c(-15,-2)
+      ylim=c(4,14)
+      radius=0.5}
+    if(subsp=="all"){
+      title <- "All Samples"
+      xlim=c(-15,33)
+      ylim=c(-7,14)
+      radius=1}
+  # Loop over K values
+  plots=list()
+  par(mar=c(1,1,1,1))
+  for(K in Ks){
+    # Select run with highest likelihood for this values of K
+    run=paste0(max.logs[max.logs$k==K, 'run'])
+    # Read in data for the run with the highest likelihood 
+    q=read.table(paste0(input.prefix, "_K", K, "_run", run, ".qopt"))
+    # I standardise the column names to 'group' rather than 'Site' or 'Subspecies' etc. so it is general
+    meta.data$Group=meta.data[,'Community']
+    # Select only columns with community information
+    meta.data=meta.data[,c("Site", "Subspecies", "Longitude", "Latitude", "Community")]
+    # cbind samples and group to NGSadmix results
+    meta.data.q=cbind(meta.data, q)
+    # Plot
+    map("worldHires", xlim=xlim,  ylim=ylim, col="white", fill=TRUE)
+    title(paste0(title, ", K=", K))
+    per.site.data <- data.frame(matrix(ncol = ncol(meta.data.q)))
+    colnames(per.site.data) <- c(colnames(meta.data), paste0("V", 1:K))
+    for(site in unlist(unique(meta.data.q$Site))){
+      ind.data <- meta.data.q[meta.data.q$Site==site,]
+      per.site.proportions <- data.frame(t(colSums(ind.data[,(ncol(meta.data)+1):ncol(ind.data)])/nrow(ind.data)))
+      add.pie(as.matrix(per.site.proportions), 
+              x=ind.data[1,'Longitude'],
+              y=ind.data[1,'Latitude'],
+              radius = radius,
+              labels="",
+              col = colorRampPalette(brewer.pal(K, "Set1"))(K))
+    }
+  }
+}
+```
+
+### Selecting the best runs and K values
+
+These bash scripts pull the log likelihood out of the NGSadmix result and organises the results in a table. This is done in bash rather than R as the log file is not tabular making manipulation in R very difficult.
+
+#### All
+
+```{bash}
+pwd
+# bash
+INDIR='../ngsadmix/exome/output/f5.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01'
+OUTDIR='output/ngsadmix/'
+echo k run log >> ${OUTDIR}/k_logs.TEMP.txt
+for K in {2..10}
+  do
+  for RUN in {1..10}
+     do
+     # Look for line with 'best' in it, split the string at spaces and take the second element then split it by '-' and take the second element and you have the log likelihood
+     LOG=`grep best ${INDIR}/f5.0.5x.all_K${K}_run${RUN}.log | cut -d' ' -f 2 | cut -d'=' -f 2`
+     # By saving as a temporary file and then moving it to its final name we stop the file from just continually growing each time we run this chunk
+    echo $K $RUN $LOG >> ${OUTDIR}/k_logs.TEMP.txt
+  done
+done
+mv ${OUTDIR}/k_logs.TEMP.txt ${OUTDIR}/all_k_logs.txt
+```
+
+```{r}
+# Read table with log liklihoods of each run into R
+k_logs_all=fread('exome/output/ngsadmix/all_k_logs.txt')
+# Select run with maximum likelihood per K
+max_logs_all=k_logs_all %>% group_by(k) %>% slice(which.max(log))
+
+# Make CLUMPAK input file
+k_logs_all_clumpak=k_logs_all[,c("k", "log")]
+## Change log liklihood to positive (appears to be needed for clumpak)
+k_logs_all_clumpak$log=abs(k_logs_all_clumpak$log)
+write.table(k_logs_all_clumpak, 'exome/output/ngsadmix/k_logs_all_clumpak.txt', col.names=F, row.names=F)
+```
+
+We select the run with the highest log-likelihood i.e. least negative e.g. a run with a log-likelihood of -2 would be selected over one with a log-likelihood of -5. I have manually checked that this is what the code is doing.
+
+##### CLUMPAK results
+
+CLUMPAK selects the best K using an 'ad hoc statistic DeltaK based on the rate of change in the log probability of data between successive K values'. https://www.researchgate.net/publication/7773162_Detecting_the_number_of_clusters_of_individuals_using_the_software_STRUCTURE_A_simulation_study
+
+Best K for all: 5
+
+```{r}
+ggplot(max_logs_all, aes(x=k, y=log)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title="Log-likelihood of Each K Value for All Samples", x="K", y = "Log-likelihood") +
+  geom_line()
+```
+
+#### Subspecies
+
+```{bash}
+pwd
+for SUBSP in c e n w
+  do
+  # bash
+  INDIR='../ngsadmix/exome/output/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01'
+  OUTDIR='exome/output/ngsadmix'
+  echo k run log >> ${OUTDIR}/k_logs.TEMP.txt
+  for K in {2..10}
+    do
+    for RUN in {1..10}
+       do
+       # Look for line with 'best' in it, split the string at spaces and take the second element then split it by '-' and take the second element and you have the log likelihood
+       LOG=`grep best ${INDIR}/${SUBSP}/f5.0.5x.${SUBSP}_K${K}_run${RUN}.log | cut -d' ' -f 2 | cut -d'=' -f 2`
+      # By saving as a temporary file and then moving it to its final name we stop the file from just continually growing each time we run this chunk
+      echo $K $RUN $LOG >> ${OUTDIR}/k_logs.TEMP.txt
+    done
+  done
+  mv ${OUTDIR}/k_logs.TEMP.txt ${OUTDIR}/${SUBSP}_k_logs.txt
+done
+```
+
+```{r}
+# Prepare list to store results in
+max_logs_subsp=list()
+# For each subspecies...
+for(subsp in c('c' ,'e', 'n', 'w')){
+  # Read table with log likelihoods of each run into R
+  k_logs=fread(paste0('exome/output/ngsadmix/', subsp, "_k_logs.txt"))
+  # Select run with maximum likelihood per K
+  max_logs_subsp[[subsp]]=k_logs %>% group_by(k) %>% slice(which.max(log))
+  # Make CLUMPAK input file
+  k_logs_clumpak=k_logs[,c("k", "log")]
+  ## Change log likelihood to positive (appears to be needed for clumpak)
+  k_logs_clumpak$log=abs(k_logs_clumpak$log)
+  write.table(k_logs_clumpak, paste0('exome/output/ngsadmix/k_logs_', subsp,'_clumpak.txt'), col.names=F, row.names=F)
+}
+
+# Make CLUMPAK input file
+k_logs_all_clumpak=k_logs_all[,c("k", "log")]
+## Change log likelihood to positive (appears to be needed for clumpak)
+k_logs_all_clumpak$log=abs(k_logs_all_clumpak$log)
+write.table(k_logs_all_clumpak, 'exome/output/ngsadmix/k_logs_all_clumpak.txt', col.names=F, row.names=F)
+```
+
+##### CLUMPAK results
+
+Best K for c: 4
+Best K for e: 4
+Best K for n: 6
+Best K for w: 3
+
+```{r out.width="25%"}
+for(subsp in c("c","e","n","w")){
+  if(subsp=="c"){title="Central"}
+  if(subsp=="e"){title="Eastern"}
+  if(subsp=="n"){title="Nigeria-Cameroon"}
+  if(subsp=="w"){title="Western"}
+  df <- max_logs_subsp[[subsp]]
+  plot <- ggplot(df, aes(x=k, y=log)) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    labs(title=paste0("Log-likelihood of Each K Value for ", title), x="K", y = "Log-likelihood") +
+    geom_line()
+  print(plot)
+}
+```
+
+#### All
+
+```{r message=FALSE, warning=FALSE, results=FALSE, fig.width=10, fig.height=7}
+plot.NGSadmix(meta.data=f5_exome, 
+              max.logs=max_logs_all, 
+              input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/f5.0.5x.all'), 
+              title="All Samples", 
+              Ks=2:10, 
+              group="Subspecies",
+              order_by_anc=FALSE)
+```
+
+#### Central
+
+```{r message=FALSE, warning=FALSE, results=FALSE, fig.width=10, fig.height=7}
+plot.NGSadmix(meta.data=f5_exome[f5_exome$Subspecies=="Central",], 
+              max.logs=max_logs_subsp[['c']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/c/f5.0.5x.c'), 
+              title="Central", 
+              Ks=2:10, 
+              group="Community",
+              order_by_anc=FALSE)
+```
+
+#### Eastern
+
+```{r message=FALSE, warning=FALSE, results=FALSE, fig.width=10, fig.height=7}
+plot.NGSadmix(meta.data=f5_exome[f5_exome$Subspecies=="Eastern",], 
+              max.logs=max_logs_subsp[['e']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/e/f5.0.5x.e'), 
+              title="Eastern", 
+              Ks=2:10, 
+              group="Community",
+              order_by_anc=FALSE)
+```
+
+#### Nigeria-Cameroon
+
+```{r message=FALSE, warning=FALSE, results=FALSE, fig.width=10, fig.height=7}
+plot.NGSadmix(meta.data=f5_exome[f5_exome$Subspecies=="Nigeria-Cameroon",], 
+              max.logs=max_logs_subsp[['n']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/n/f5.0.5x.n'), 
+              title="Nigeria-Cameroon", 
+              Ks=2:10, 
+              group="Community",
+              order_by_anc=FALSE)
+```
+
+#### Western
+
+```{r message=FALSE, warning=FALSE, results=FALSE, fig.width=10, fig.height=7}
+plot.NGSadmix(meta.data=f5_exome[f5_exome$Subspecies=="Western",], 
+              max.logs=max_logs_subsp[['w']], 
+              input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/w/f5.0.5x.w'), 
+              title="Western", 
+              Ks=2:10, 
+              group="Community",
+              order_by_anc=FALSE)
+```
+
+# NGSadmix maps
+
+```{r  message=FALSE, warning=FALSE, fig.show="hold", out.width="33%", fig.width=10, fig.height=5, results=FALSE}
+plot.NGSadmix.map(meta.data=f5_exome, 
+                  max.logs=max_logs_all,
+                  input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.all_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/f5.0.5x.all'),
+                  Ks=2:10)
+```
+
+```{r  message=FALSE, warning=FALSE, fig.show="hold", out.width="33%", fig.width=5, fig.height=5, results=FALSE}
+plot.NGSadmix.map(meta.data=f5_exome[f5_exome$Subspecies=="Central",], 
+                  max.logs=max_logs_subsp[['c']],
+                  subsp='c',
+                  input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/c/f5.0.5x.c'),
+                  Ks=2:10)
+```
+
+```{r message=FALSE, warning=FALSE, fig.show="hold", out.width="33%", fig.width=5, fig.height=5, results=FALSE}
+plot.NGSadmix.map(meta.data=f5_exome[f5_exome$Subspecies=="Eastern",], 
+                  max.logs=max_logs_subsp[['e']],
+                  subsp='e',
+                  input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/e/f5.0.5x.e'),
+                  Ks=2:10)
+```
+
+```{r message=FALSE, warning=FALSE, fig.show="hold", out.width="33%", results=FALSE}
+plot.NGSadmix.map(meta.data=f5_exome[f5_exome$Subspecies=="Nigeria-Cameroon",], 
+                  max.logs=max_logs_subsp[['n']],
+                  subsp='n',
+                  input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/n/f5.0.5x.n'),
+                  Ks=2:10)
+```
+
+```{r message=FALSE, warning=FALSE, fig.show="hold", out.width="33%", results=FALSE}
+plot.NGSadmix.map(meta.data=f5_exome[f5_exome$Subspecies=="Western",], 
+                  max.logs=max_logs_subsp[['w']],
+                  subsp='w',
+                  input.prefix=paste0(ngsadmix_output_dir, '/f5.0.5x.subsp_minInd.15_doMajorMinor.1_HWE.p.1e-3_snp.p.1e-6_minMAF.0.01/w/f5.0.5x.w'),
+                  Ks=2:10)
+```
+
+## Define populations 
+
+```{r}
+f5_exome$Population=f5_exome$Community
+# Combine Comoe populations
+f5_exome[grep("Comoe", f5_exome$Community), 'Population']="w.Comoe"
+# Combine Tai populations
+f5_exome[grep("Tai", f5_exome$Community), 'Population']="w.Tai"
+# Combine Bakoun and Sobory
+f5_exome[f5_exome$Community=="w.Bakoun" | f5_exome$Community=="w.Sobory", 'Population']="w.BakounSobory"
+# Combine Korup and MtCameroon
+f5_exome[f5_exome$Community=="n.Korup" | f5_exome$Community=="n.MtCameroon", 'Population']="n.KorupMtCameroon"
+
+unique(f5_exome$Population)
+```
+
+### Samples per population
+
+```{r}
+plot.sample.freq=function(meta.data, group="Community", title=NULL, output.file=NULL, hlines=F){
+  # Frequency per group
+  freq.per.group=data.frame(table(meta.data[[group]]))
+  # Rename columns
+  colnames(freq.per.group)=c(group, "Freq")
+  # Add subspecies information
+  freq.per.group=merge(freq.per.group, unique(meta.data[,c(group, "Subspecies")]))
+  # Order by frequency
+  freq.per.group=freq.per.group[order(freq.per.group$Subspecies, freq.per.group$Freq),]
+  # Make group type factor
+  freq.per.group[[group]]=factor(freq.per.group[[group]], levels=unique(freq.per.group[[group]]))
+  # Change Nigeria-Cameroon title so it fits in the plot
+  freq.per.group$Subspecies[freq.per.group$Subspecies=="Nigeria-Cameroon"] = "N-C"
+  # Plot
+  freq.per.group.plot=ggplot(freq.per.group) +
+    theme_bw() +
+    geom_bar(aes(as.factor(.data[[group]]), Freq, fill=Subspecies), stat="identity") +
+    facet_grid(.~Subspecies, space="free", scales="free_x") + 
+    theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1), legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+    labs(title=title, x=paste0(group), y = "Number of Samples") +
+    scale_fill_manual(values = c('green3', 'darkorange', 'red', 'blue'))
+  if(hlines==T){
+    freq.per.group.plot=freq.per.group.plot+
+      geom_hline(yintercept = 6, linetype="dashed")+
+      geom_hline(yintercept = 8, linetype="dashed", colour="darkgrey")}
+  # Save plot
+  if(!is.null(output.file)){ggsave(paste0(output.file), freq.per.group.plot, height=6, width=10)}
+  # Show plot
+  print(freq.per.group.plot)
+}
+```
+
+```{r}
+plot.sample.freq(f5_exome, group="Population", title="f5: Samples per Population", output.file=paste0(output_dir, "/f5_samples.per.pop.pdf"))
+```
+
+Final coverage stats after removing populations with N<8
+
+```{r}
+pop_n=table(f5_exome$Population)
+f5_exome.f=f5_exome[f5_exome$Population %in% names(pop_n[pop_n>=8]), ]
+
+cat("exome\nMedian coverage: ", median(f5_exome.f$Coverage), "\nMax coverage: ", max(f5_exome.f$Coverage), "\nMin coverage: ", min(f5_exome.f$Coverage), "\n")
+
+
+f7_chr21=read.csv("../sample_filtering/chr21/output/f7/f7.chr21.metadata.csv", check.names = FALSE)
+f7_chr21.f=f7_chr21[f7_chr21$Sample %in% f5_exome.f$Sample,]
+
+cat("chr21\nMedian coverage: ", median(f7_chr21.f$Coverage), "\nMax coverage: ", max(f7_chr21.f$Coverage), "\nMin coverage: ", min(f7_chr21.f$Coverage), "\n")
+```
+
+### Write BAM file lists
+
+```{r}
+pops=unique(f5_exome$Population)
+for(pop in pops){
+  f5_exome.pop=f5_exome[f5_exome$Population==pop, ]
+  write.table(f5_exome.pop$BAM.mapped.on.target,
+              paste0(filtering_dir, "/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel/bam.filelist.", pop),
+              row.names=FALSE, col.names=FALSE, quote=FALSE)
+}
+```
+
+```{bash eval=FALSE}
+scp -r ../sample_filtering/exome/output/bam.filelists/exome/f5_pc1_hc.1pct_coverage.0.5x_rm.rel_rm.outliers_sort.swaps_rm.rel myriad:/home/ucfajos/analysis/phase1and2_exome_analysis/angsd/bam.filelists/mapped.on.target/
+```
+
+Write population list
+
+```{r}
+pop.list=t(unique(f5_exome[order(f5_exome$Population),]$Population))
+# Once in population structure directory
+write.table(pop.list, paste0(output_dir, "/pop.list.txt"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+# Once in sample filtering directory
+write.table(pop.list, paste0(filtering_dir, "/pop.list.txt"),
+            row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+Write samples per population
+
+```{r}
+# Frequency per population
+freq.per.pop=data.frame(table(f5_exome$Population))
+# Rename columns
+colnames(freq.per.pop)=c("Population", "Freq")
+freq.per.pop
+
+# In population structure directory
+write.csv(freq.per.pop, paste0(output_dir, "/freq.per.pop.csv"),
+            row.names=FALSE, quote=FALSE)
+
+```
+
+Write metadata with populations
+
+```{r}
+write.table(f5_exome, paste0(output_dir, "/f5.metadata.with.populations.csv"), sep=",", row.names=FALSE, col.names=TRUE, quote=FALSE)
+```
+
