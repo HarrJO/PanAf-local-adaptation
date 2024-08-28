@@ -9,7 +9,7 @@ across all alleles and populations to get the total coverage depth at that site 
 in principle.
 - ../allele_frequencies/scripts/maf2dac.v3.2.py must be run first to selct the SNPs of interest
 	
-./$DATA/scripts/*.sh
+./$DATA/scripts/ *.sh
 Job scripts for running ./$DATA/scripts/snpStat2coverage*.py on the HPC (this isn't very computationally expensive).
 
 ./exome/scripts/samtools_depth/run_samtools.depth_number.of.bases.covered.sh
