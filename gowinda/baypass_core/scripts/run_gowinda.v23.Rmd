@@ -601,7 +601,7 @@ write.table(expr.ass[,c("Trait_ID", "Trait", "Genes")], "output/gowinda_input/as
 ```
 
 ```{r}
-# (semi-)unique genes
+# (semi-)unique genes?
 n=3
 
 freq=table(expr$`Gene name`)
@@ -1102,28 +1102,6 @@ for SUBSP in c e
     -g baypass_core/output/gowinda_input/association_files/expr_association.gene.set_and.all.txt \
     -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_expr.gtf \
     -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.expr
-    done
-  done
-```
-
-#### Tissue expression - semi-unique
-
-```{bash eval=FALSE}
-for SUBSP in c e
-  do
-  # Add output directory
-  mkdir baypass_core/output/gowinda_output/${SUBSP}
-  for TAIL in fpr0.5pct.non-genic_1000bp.flanks fpr0.1pct.non-genic_1000bp.flanks fpr0.05pct.non-genic_1000bp.flanks
-    do
-    #SUFFIX=${TAIL}-cov_cor
-    SUFFIX=${TAIL}
-    # Run BayPass
-    scripts/run_gowinda.sh \
-    -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
-    -c baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}.${SUFFIX} \
-    -g baypass_core/output/gowinda_input/association_files/expr.5overlap_association.gene.set_and.all.txt \
-    -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_expr.gtf \
-    -o baypass_core/output/gowinda_output/${SUBSP}/${SUBSP}.${SUFFIX}.gowinda_out.expr.5overlap
     done
   done
 ```

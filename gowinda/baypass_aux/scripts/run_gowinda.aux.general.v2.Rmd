@@ -286,35 +286,6 @@ for ENV_DATA in f_over_sum_known_trees
   done
 ```
 
-##### Tissue expression - semi-unique
-
-```{bash eval=FALSE}
-for ENV_DATA in f_over_sum_known_trees
-  do
-  for SUBSP in c e
-    do
-    for DIR in '.pos_beta' '.neg_beta'
-      do
-      for TAIL in fpr0.5pct.non-genic_1000bp.flanks${DIR} fpr0.1pct.non-genic_1000bp.flanks${DIR} fpr0.05pct.non-genic_1000bp.flanks${DIR}
-        do
-        for COV in f_over_sum_known_trees
-          do
-        # Add output directory
-        mkdir baypass_aux/output/gowinda_output/${ENV_DATA}
-        # Run BayPass
-        baypass_aux/scripts/run_gowinda.aux.sh \
-        -b baypass_core/output/gowinda_input/snp_files/${SUBSP}/${SUBSP}_bg.snps \
-        -c baypass_aux/output/gowinda_input/snp_files/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL} \
-        -g baypass_core/output/gowinda_input/association_files/expr.5overlap_association.gene.set_and.all.txt \
-        -a baypass_core/output/gowinda_input/annotation_files/Homo_sapiens.GRCh37.87.chr_gene.symbol_sync_homologs_expr.gtf \
-        -o baypass_aux/output/gowinda_output/${ENV_DATA}/${SUBSP}.${ENV_DATA}-${COV}.${TAIL}.gowinda_out.expr.5overlap
-       done
-      done
-    done
-  done
-done
-```
-
 #### Phenotype database
 
 ```{bash eval=FALSE}
