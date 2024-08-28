@@ -11,7 +11,7 @@ matrix.
 - BayPass is then run using SNPs with up to 30% missing data and using the estimated omega under the core model (to identify 
 signatures of selection in the form of especially high allele frequency differentiation) or the AUX model (to perform a 
 genotype-environment association analysis).
-	• Because Nigeria-Cameroon only has two populations, BayPass was only run on this subspecies-dataset under the core model with 
+	- Because Nigeria-Cameroon only has two populations, BayPass was only run on this subspecies-dataset under the core model with 
 no missing data.
 
 ./baypass/running_baypass/exome/scripts/run_baypass_aux.sh
@@ -40,14 +40,14 @@ them to the cluster.
 - This script should be run first, it formats the BayPass core outputs (./baypass/running_baypass/$DATA/output) for the exome and for 
 non-genic-chr21. This is only done for the runs which allowed up to 30% missing data at a SNP (apart from Nigeria-Cameroon which has 
 only two populations anyway).
-	• Adds the genomic position of each SNP (i.e. chromosome and position).
-	• XtX files.
-		○ Combines results from the three independent BayPass runs and calculates a median XtX value for each SNP.
-		○ Adds coverage depth to the data frame.
-		○ Assigns SNPs to genes using GTF file from ../gowinda/baypass_core.
-	• Allele frequency files (exome only).
-		○ Adds population names.
-		○ Only a single file from a 'focal run' is used, i.e., the average allele frequencies across multiple independent 
+	- Adds the genomic position of each SNP (i.e. chromosome and position).
+	- XtX files.
+		- Combines results from the three independent BayPass runs and calculates a median XtX value for each SNP.
+		- Adds coverage depth to the data frame.
+		- Assigns SNPs to genes using GTF file from ../gowinda/baypass_core.
+	- Allele frequency files (exome only).
+		- Adds population names.
+		- Only a single file from a 'focal run' is used, i.e., the average allele frequencies across multiple independent 
 runs is not used.
 - This script is slow (I later wrote the equivalent for the AUX output in python to speed things up) but is necessary for all further 
 analysis.
@@ -71,10 +71,10 @@ to account for this potentially confounding effect.
 ./baypass/analysing_baypass_output/baypass_aux/scripts/format_baypass_aux_output.ipynb
 - Jupyter Notebook which formats BayPass AUX output (./baypass/running_baypass/$DATA/output) in the same way as the core output is 
 formatted
-	• Adds the genomic position of each SNP (i.e. chromosome and position).
-	• Combines results from the three independent BayPass runs and calculates a median Bayes Factor (BF) and corelation 
+	- Adds the genomic position of each SNP (i.e. chromosome and position).
+	- Combines results from the three independent BayPass runs and calculates a median Bayes Factor (BF) and corelation 
 coefficients (beta) value for each SNP.
-	• Adds coverage depth to the data frame.
+	- Adds coverage depth to the data frame.
 - This notebook uses the formatted core output to add gene annotations (so that must be run first).
 - The script is written in a way to accommodates a range of different ways of conducting the BayPass analysis which were subsequently 
 abandoned in favour of the current method.
