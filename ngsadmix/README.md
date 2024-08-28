@@ -4,8 +4,7 @@ ANGSD.
 - This is used in sample filtering (to identify sample swaps and outliers indicative of contamination) and for population structure 
 analyses.
 
-- Unlike for PCAngsd, this was run only for the exome data as it was decided that NGSadmix does not provide much more information that 
-PCAngsd apart.
+- Unlike for PCAngsd, this was run only for the exome data as it was decided that NGSadmix does not provide much more information than PCAngsd.
 
 ./exome/scripts/f*/run_ngsadmix*
 - These scripts run NGSadmix for the exome data.

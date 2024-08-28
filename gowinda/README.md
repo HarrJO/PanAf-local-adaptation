@@ -3,7 +3,7 @@
 
 
 ./gowinda/scripts/run_gowinda.sh
-- This script is the general gowinda script used.
+- This script is the general gowinda script used. It can be run with different command line arguments to determine the input and output.
 
 ./gowinda/scripts/bin
 - Contains all the gowinda binary files.

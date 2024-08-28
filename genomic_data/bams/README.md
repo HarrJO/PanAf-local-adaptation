@@ -1,4 +1,5 @@
-This directory should contain the PanAf BAMs for chr21 and exome data containing only mapped on target reads (mapped to hg19). If it doesn't, its due to space restraints. They are backed up on the UCL RDSS cluster.
+This directory is where the PanAf BAMs for chr21 and exome data containing only mapped on target reads (mapped to hg19) can be stored to run ANGSD. 
 
-exomes: /mnt/gpfs/live/ritd-ag-project-rd00q6-aanda24/ChimpanzeeAdaptation/PanAf/Data/PanAf_phase1and2_exomes/BAM.mapped.on.target
-chr21: /mnt/gpfs/live/ritd-ag-project-rd00q6-aanda24/ChimpanzeeAdaptation/PanAf/Data/PanAf_phase1and2_chr21/BAMs
+Exome BAMs will be publicly available on publication on ENA under the accession code ENA:PRJEB76176
+
+Chr21 BAMs are publicly available on ENA under the accession code ENA:PRJEB46115

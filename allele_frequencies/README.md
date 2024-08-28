@@ -4,7 +4,7 @@ perform SNP filtering.
 - The python scripts were run on a HPC and run chromosomes-by-chromosome (for the exome) so the process could be run in 
 parallel. The large ANGSD output files means this process is very slow.
 	
-- From here on, analyses are run on sperate "subspecies-datasets" all subspecies (All), (2) central and eastern together 
+- From here on, analyses are run on separate "subspecies-datasets" all subspecies (All), (2) central and eastern together 
 (Central-Eastern) (3) Nigeria-Cameroon (Nigeria-Cameroon) and (4) western (Western). The central and eastern subspecies were combined 
 because of their very low levels of genetic differentiation.
 - The following prefixes are used to denote these datasets (exome/chr21):
@@ -31,7 +31,7 @@ globally polymorphic then apply ANGSD only to these regions using the -sites fla
 		○ Specific populations can be excluded (e.g.those with a sample size <8).
 		○ SNP p-value thresholds can be selected to define SNPs as polymorphic within a population.
 		○ The number of populations allowed to have missing data at a SNP can be specified, I run it once allowing no missing 
-data (for estimating the covariance matric under the BayPass core model) and one allowing up of 30% of populations to have missing 
+data (for estimating the covariance matrix under the BayPass core model) and one allowing up of 30% of populations to have missing 
 data (for testing for signatures of selection as BayPass is robust to some missing data at this stage).
 			§ A quicker way of doing this would be to run it allowing 30% missing data and then just filter SNPs 
 afterwards.

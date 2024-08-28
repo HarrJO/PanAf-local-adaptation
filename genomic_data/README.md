@@ -7,7 +7,7 @@ This directory contains the genomic data used.
 - Metadata describing each sample can be found in ../sample_filtering
 
 ./ref_genomes
-- Contains the reference genomes and ancestral state files provided to ANGSD.
+- This directory is where the reference genome and ancestral ancestral state files can be stored to run ANGSD.
 - ./ref_genomes/scripts contains the scripts used to format and index these files.
 - Details for downloading, formatting and indexing these files are found below
 

@@ -11,3 +11,5 @@ do not show any evidence of contamination in the chr21 data.
 - Rmarkdowns which analyse and plot the results from PCAngsd/NGSadmix/NGSrelate.
 - These are thoroughly annotated.
 
+meta.data/
+- This meta data will be included as a supplementary file in the Ostridge et al. publication
