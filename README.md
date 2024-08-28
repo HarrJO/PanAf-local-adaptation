@@ -1,5 +1,7 @@
 This repository contains data and code from Ostridge et al. 
 
+Preprint: https://doi.org/10.1101/2024.07.09.601734
+
 This code starts with the mapped on target BAM files for the exome and chr21 (Fontsere et al., 2022) from PanAf project 
 (http://panafrican.eva.mpg.de/). The scripts here then perform sample filtering, population structure analyses, population allele 
 frequency estimation and tests for signatures of local adaptation. This directory contains scripts that were run on an HPC and 
