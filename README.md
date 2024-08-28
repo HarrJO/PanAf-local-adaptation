@@ -11,7 +11,7 @@ Each of the subdirectories listed below have their own README file going into gr
 
 genomic_data
 - This directory contains genomic data.
-- All exome sequence data (BAMs and FASTQs) will be available on ENA under the accession code ENA:PRJEB76176.
+- All exome sequence data (BAMs and FASTQs) will be available on ENA under the accession code ENA:PRJEB76176 on publication.
 - All chr21 sequence data (BAMs and FASTQs) is available on ENA under the accession code ENA:PRJEB46115.
 
 angsd
@@ -71,11 +71,11 @@ differentiation (under the core model) or allele frequencies correlating with en
 gowinda
 - Gowinda is used to perform gene set enrichment analysis on the candidate SNPs identified in BayPass.
 - ./gowinda/baypass_core contains the scripts required to generate input files, run gowinda and analyses the output. 
-./gowinda/baypass_aux contains the scripts required to run gowinda and analyses the output - this directory used input files generates 
-in ./gowinda/baypass_core so some of these scripts must be run first
+./gowinda/baypass_aux contains the scripts required to run gowinda and analyses the output - this directory uses input files generated 
+in ./gowinda/baypass_core so some of these scripts must be run first.
 
 pgls
-- Phylogenetic Generalized Least Squares (PGLS) was run to confirm the BayPass GEA candidates
-- ./pgls/scripts contains scripts required to run and plot the output of PGLS
+- Phylogenetic Generalized Least Squares (PGLS) was run to confirm the BayPass GEA candidates.
+- ./pgls/scripts contains scripts required to run and plot the output of PGLS.
 
 
