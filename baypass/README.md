@@ -61,7 +61,7 @@ analysis.
 to account for this potentially confounding effect.
 - Outputs to ./baypass/analysing_baypass_output/baypass_core/outputs/baypass_core_output_with_fprs.
 
-./baypass/analysing_baypass_output/baypass_core/scripts/*.R
+./baypass/analysing_baypass_output/baypass_core/scripts/\*.R
 - This script define many custom functions used in these Rmarkdowns.
 
 
