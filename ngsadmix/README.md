@@ -9,5 +9,5 @@ analyses.
 ./exome/scripts/f*/run_ngsadmix*
 - These scripts run NGSadmix for the exome data.
 - Directory names:
-	• As is made clear in ../sample_filtering/exome/scripts, I label each sample filtering stage as fx, i.e., unfiltered = f0, one 
+	- As is made clear in ../sample_filtering/exome/scripts, I label each sample filtering stage as fx, i.e., unfiltered = f0, one 
 filter stage = f1 etc.. The final filter stage for the exome is f5.

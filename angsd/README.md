@@ -14,13 +14,13 @@ analysis.
 ./exome/scripts/run_angsd_f*
 - These scripts run ANGSD for the exome data.
 - File names:
-	• As is made clear in ../sample_filtering/exome/scripts, I label each sample filtering stage as fx, i.e., unfiltered = f0, one 
+	- As is made clear in ../sample_filtering/exome/scripts, I label each sample filtering stage as fx, i.e., unfiltered = f0, one 
 filter stage = f1 etc.. The final filter stage for the exome is f5.
-	• 0.5x refers to the fact that the minimum average coverage filter is 0.5-fold.
-	• "all" means all samples were given together, "subsp" means ANGSD was run for each subspecies separately, "coms" means ANGSD 
+	- 0.5x refers to the fact that the minimum average coverage filter is 0.5-fold.
+	- "all" means all samples were given together, "subsp" means ANGSD was run for each subspecies separately, "coms" means ANGSD 
 was run for each sample site (aka. community) separately and "pops" means ANGSD was run for each population (defined in 
 ../population_structure/exome/scripts/population_structure.Rmd) separately.
-	• Other aspects of file names correspond to ANGSD parameters and should be self explanatory.
+	- Other aspects of file names correspond to ANGSD parameters and should be self explanatory.
 
 ./exome/scripts/run_realSFS.subsp.fst_2024.sh
 - Calculates Fst between subspecies working on PanAf genotype likelihoods estimated with ANGSD

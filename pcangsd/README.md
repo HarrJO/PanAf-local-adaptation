@@ -6,9 +6,9 @@ population structure analyses (./population_structure).
 ./exome/scripts/run_pcangsd_f*
 - These scripts run PCAngsd for the exome data.
 - File names:
-	• As is made clear in ../sample_filtering/exome/scripts, I label each sample filtering stage as fx, i.e., unfiltered = f0, one 
+	- As is made clear in ../sample_filtering/exome/scripts, I label each sample filtering stage as fx, i.e., unfiltered = f0, one 
 filter stage = f1 etc.. The final filter stage for the exome is f5.
-	• "all" means all samples were given together and "subsp" means ANGSD was run for each subspecies separately.
+	- "all" means all samples were given together and "subsp" means ANGSD was run for each subspecies separately.
 
 ./chr21/scripts/run_pcangsd_f*
 - These scripts run PCAngsd for the chr21data.

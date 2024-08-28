@@ -4,8 +4,8 @@ samples with exceptionally low coverage, evidence of contamination or related sa
 do not show any evidence of contamination in the chr21 data.
 
 - File names:
-		○ I label each sample filtering stage as fx, i.e., unfiltered = f0, one filter stage = f1 etc.. 
-		○ The final filter stage for the exome is f5 and for the chr21 it is f7.
+	- I label each sample filtering stage as fx, i.e., unfiltered = f0, one filter stage = f1 etc.. 
+	- The final filter stage for the exome is f5 and for the chr21 it is f7.
 
 ./$DATA/scripts
 - Rmarkdowns which analyse and plot the results from PCAngsd/NGSadmix/NGSrelate.
