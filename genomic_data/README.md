@@ -1,10 +1,9 @@
 This directory contains the genomic data used.
 
 ./bams
-- Contains the exome and chr21 mapped BAM files mapped to hg19 containing only on target reads.
-- It may not actually contain them due to a lack of storage space, if so, a README in that directory will say where to find them.
-- Each file corresponds to a single sample.
-- Metadata describing each sample can be found in ../sample_filtering
+- This directory is where the PanAf BAMs for chr21 and exome data containing only mapped on target reads (mapped to hg19) can be stored to run ANGSD. 
+- Exome BAMs will be publicly available on publication on ENA under the accession code ENA:PRJEB76176
+- Chr21 BAMs are publicly available on ENA under the accession code ENA:PRJEB46115
 
 ./ref_genomes
 - This directory is where the reference genome and ancestral ancestral state files can be stored to run ANGSD.

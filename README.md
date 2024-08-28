@@ -7,13 +7,12 @@ This code starts with the mapped on target BAM files for the exome and chr21 (Fo
 frequency estimation and tests for signatures of local adaptation. This directory contains scripts that were run on an HPC and 
 others that can be run locally.
 
-All genomic data (BAMs and FASTQs) will be available on ENA under the accession code ENA:PRJEB76176.
-
 Each of the subdirectories listed below have their own README file going into greater detail.
 
 genomic_data
 - This directory contains genomic data.
-- All genomic data (BAMs and FASTQs) will be available on ENA under the accession code ENA:PRJEB76176.
+- All exome sequence data (BAMs and FASTQs) will be available on ENA under the accession code ENA:PRJEB76176.
+- All chr21 sequence data (BAMs and FASTQs) is available on ENA under the accession code ENA:PRJEB46115.
 
 angsd
 - This directory contains all the job scripts used to run ANGSD (Korneliussen, Albrechtsen & Nielsen 2014) on an HPC. ANGSD is 

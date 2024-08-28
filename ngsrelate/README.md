@@ -7,6 +7,6 @@ data).
 
 ./exome/scripts/run_ngsrealte_f*
 - File names
-	• As is made clear in ../sample_filtering/exome/scripts, I label each sample filtering stage as fx, i.e., unfiltered = f0, one 
+	- As is made clear in ../sample_filtering/exome/scripts, I label each sample filtering stage as fx, i.e., unfiltered = f0, one 
 filter stage = f1 etc.. The final filter stage for the exome is f5.
-"all" means ngsrelate is run for all sample sites (aka communities). If sample sites are names then the analysis is only run for these
+	- "all" means ngsrelate is run for all sample sites (aka communities). If sample sites are names then the analysis is only run for these
